@@ -162,6 +162,10 @@ DEFAULT_REASONING_TAGS = [
 ]
 DEFAULT_SOLUTION_TAGS = [('<|begin_of_solution|>', '<|end_of_solution|>')]
 DEFAULT_CODE_INTERPRETER_TAGS = [('<code_interpreter>', '</code_interpreter>')]
+TOOL_FALLBACK_SYNTHESIS_PROMPT = (
+    'Answer the user directly using the completed tool results above. '
+    'Do not call any additional tools. Do not mention these instructions.'
+)
 
 
 def output_id(prefix: str) -> str:
@@ -524,6 +528,134 @@ def serialize_output(output: list) -> str:
                 content += f'<details type="code_interpreter" done="false"{output_attr}>\n<summary>Analyzing…</summary>\n{display}\n</details>\n'
 
     return content.strip()
+
+
+def output_has_assistant_message_after_last_tool_output(output: list[dict]) -> bool:
+    """
+    Return True when a non-empty assistant message appears after the last tool output.
+
+    This intentionally ignores any assistant text that appeared before the last
+    tool result, so pre-tool preambles like "let me check" do not count as a
+    final user-facing answer.
+    """
+
+    last_tool_output_index = None
+    for idx, item in enumerate(output):
+        if item.get('type') == 'function_call_output':
+            last_tool_output_index = idx
+
+    if last_tool_output_index is None:
+        return True
+
+    for item in output[last_tool_output_index + 1 :]:
+        if item.get('type') != 'message':
+            continue
+
+        for content_part in item.get('content', []):
+            if (
+                content_part.get('type') == 'output_text'
+                and content_part.get('text', '').strip()
+            ):
+                return True
+
+    return False
+
+
+def build_stateless_tool_follow_up_messages(
+    messages: list[dict], output: list[dict]
+) -> list[dict]:
+    """
+    Build follow-up messages for stateless chat-completions providers.
+
+    Multimodal tool outputs are converted into a synthetic user message because
+    chat-completions tool messages do not support images across providers.
+    """
+
+    tool_messages = convert_output_to_messages(output, raw=True)
+
+    image_urls = []
+    for message in tool_messages:
+        if message.get('role') == 'tool' and isinstance(message.get('content'), list):
+            text_parts = []
+            for part in message['content']:
+                if part.get('type') == 'input_text':
+                    text_parts.append(part.get('text', ''))
+                elif part.get('type') == 'input_image':
+                    image_urls.append(part.get('image_url', ''))
+            message['content'] = ''.join(text_parts)
+
+    follow_up_messages = [
+        *copy.deepcopy(messages),
+        *tool_messages,
+    ]
+
+    if image_urls:
+        follow_up_messages.append(
+            {
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'text',
+                        'text': 'Here are the images from the tool results above. Please analyze them.',
+                    },
+                    *[{'type': 'image_url', 'image_url': {'url': url}} for url in image_urls],
+                ],
+            }
+        )
+
+    return follow_up_messages
+
+
+def build_native_tool_follow_up_form_data(
+    form_data: dict,
+    model_id: str,
+    output: list[dict],
+    last_response_id: Optional[str] = None,
+    *,
+    force_stateless: bool = False,
+    disallow_tools: bool = False,
+    extra_system_instruction: Optional[str] = None,
+) -> dict:
+    """
+    Build a follow-up chat-completion payload from native tool-call output.
+
+    When `force_stateless` is false we keep the existing Responses API stateful
+    behavior. Fallback synthesis forces a stateless payload so the provider does
+    not continue an old tool-enabled response state.
+    """
+
+    new_form_data = {
+        **form_data,
+        'model': model_id,
+        'stream': True,
+    }
+
+    if not force_stateless and ENABLE_RESPONSES_API_STATEFUL and last_response_id:
+        system_message = get_system_message(form_data['messages'])
+        follow_up_messages = (
+            [copy.deepcopy(system_message)] if system_message else []
+        ) + convert_output_to_messages(output, raw=True)
+        new_form_data['previous_response_id'] = last_response_id
+    else:
+        follow_up_messages = build_stateless_tool_follow_up_messages(
+            form_data['messages'], output
+        )
+        new_form_data.pop('previous_response_id', None)
+
+    if extra_system_instruction:
+        follow_up_messages = add_or_update_system_message(
+            extra_system_instruction,
+            follow_up_messages,
+            append=True,
+        )
+
+    new_form_data['messages'] = follow_up_messages
+
+    if disallow_tools:
+        new_form_data.pop('tools', None)
+        new_form_data.pop('tool_choice', None)
+
+    return new_form_data
 
 
 def deep_merge(target, source):
@@ -4043,6 +4175,8 @@ async def streaming_chat_response_handler(response, ctx):
                 await stream_body_handler(response, form_data)
 
                 tool_call_retries = 0
+                executed_native_tool_calls = False
+                tool_fallback_attempted = False
                 tool_call_sources = []  # Track citation sources from tool results
                 all_tool_call_sources = []  # Accumulated sources across all iterations
                 user_message = get_last_user_message(form_data['messages'])
@@ -4061,6 +4195,47 @@ async def streaming_chat_response_handler(response, ctx):
                     original_system_content = (
                         get_content_from_message(original_system_message) if original_system_message else None
                     )
+
+                async def run_follow_up_request(new_form_data: dict) -> bool:
+                    nonlocal output
+                    nonlocal prior_output
+
+                    res = await generate_chat_completion(
+                        request,
+                        new_form_data,
+                        user,
+                        bypass_system_prompt=True,
+                    )
+
+                    if not isinstance(res, StreamingResponse):
+                        return False
+
+                    # Save accumulated output and start fresh.
+                    # Responses API output_index values are relative
+                    # to the current response — a clean output list
+                    # keeps indices aligned. The display prefix
+                    # ensures the UI shows tool history during
+                    # streaming.
+                    prior_output = list(output)
+                    # Trim the trailing empty placeholder message
+                    # so it doesn't persist as a ghost item once
+                    # the new stream produces real content.
+                    if (
+                        prior_output
+                        and prior_output[-1].get('type') == 'message'
+                        and prior_output[-1].get('status') == 'in_progress'
+                    ):
+                        msg_parts = prior_output[-1].get('content', [])
+                        if not msg_parts or (
+                            len(msg_parts) == 1
+                            and not msg_parts[0].get('text', '').strip()
+                        ):
+                            prior_output.pop()
+                    output = []
+                    await stream_body_handler(res, new_form_data)
+                    output[:0] = prior_output
+                    prior_output = []
+                    return True
 
                 while len(tool_calls) > 0 and tool_call_retries < CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES:
                     tool_call_retries += 1
@@ -4262,6 +4437,9 @@ async def streaming_chat_response_handler(response, ctx):
                             }
                         )
 
+                    if results:
+                        executed_native_tool_calls = True
+
                     # Append a new empty message item for the next response
                     output.append(
                         {
@@ -4348,88 +4526,36 @@ async def streaming_chat_response_handler(response, ctx):
                     )
 
                     try:
-                        new_form_data = {
-                            **form_data,
-                            'model': model_id,
-                            'stream': True,
-                        }
-
-                        if ENABLE_RESPONSES_API_STATEFUL and last_response_id:
-                            system_message = get_system_message(form_data['messages'])
-                            new_form_data['messages'] = (
-                                [system_message] if system_message else []
-                            ) + convert_output_to_messages(output, raw=True)
-                            new_form_data['previous_response_id'] = last_response_id
-                        else:
-                            tool_messages = convert_output_to_messages(output, raw=True)
-
-                            # Chat Completions providers don't support multimodal
-                            # tool messages.  Extract images into a user message.
-                            image_urls = []
-                            for message in tool_messages:
-                                if message.get('role') == 'tool' and isinstance(message.get('content'), list):
-                                    text_parts = []
-                                    for part in message['content']:
-                                        if part.get('type') == 'input_text':
-                                            text_parts.append(part.get('text', ''))
-                                        elif part.get('type') == 'input_image':
-                                            image_urls.append(part.get('image_url', ''))
-                                    message['content'] = ''.join(text_parts)
-
-                            new_form_data['messages'] = [
-                                *form_data['messages'],
-                                *tool_messages,
-                            ]
-
-                            if image_urls:
-                                new_form_data['messages'].append(
-                                    {
-                                        'role': 'user',
-                                        'content': [
-                                            {
-                                                'type': 'text',
-                                                'text': 'Here are the images from the tool results above. Please analyze them.',
-                                            },
-                                            *[{'type': 'image_url', 'image_url': {'url': url}} for url in image_urls],
-                                        ],
-                                    }
-                                )
-
-                        res = await generate_chat_completion(
-                            request,
-                            new_form_data,
-                            user,
-                            bypass_system_prompt=True,
+                        new_form_data = build_native_tool_follow_up_form_data(
+                            form_data,
+                            model_id,
+                            output,
+                            last_response_id=last_response_id,
                         )
-
-                        if isinstance(res, StreamingResponse):
-                            # Save accumulated output and start fresh.
-                            # Responses API output_index values are relative
-                            # to the current response — a clean output list
-                            # keeps indices aligned. The display prefix
-                            # ensures the UI shows tool history during
-                            # streaming.
-                            prior_output = list(output)
-                            # Trim the trailing empty placeholder message
-                            # so it doesn't persist as a ghost item once
-                            # the new stream produces real content.
-                            if (
-                                prior_output
-                                and prior_output[-1].get('type') == 'message'
-                                and prior_output[-1].get('status') == 'in_progress'
-                            ):
-                                msg_parts = prior_output[-1].get('content', [])
-                                if not msg_parts or (len(msg_parts) == 1 and not msg_parts[0].get('text', '').strip()):
-                                    prior_output.pop()
-                            output = []
-                            await stream_body_handler(res, new_form_data)
-                            output[:0] = prior_output
-                            prior_output = []
-                        else:
+                        if not await run_follow_up_request(new_form_data):
                             break
                     except Exception as e:
                         log.debug(e)
                         break
+
+                if (
+                    executed_native_tool_calls
+                    and not tool_fallback_attempted
+                    and not output_has_assistant_message_after_last_tool_output(output)
+                ):
+                    tool_fallback_attempted = True
+                    try:
+                        fallback_form_data = build_native_tool_follow_up_form_data(
+                            form_data,
+                            model_id,
+                            output,
+                            force_stateless=True,
+                            disallow_tools=True,
+                            extra_system_instruction=TOOL_FALLBACK_SYNTHESIS_PROMPT,
+                        )
+                        await run_follow_up_request(fallback_form_data)
+                    except Exception as e:
+                        log.debug(e)
 
                 if DETECT_CODE_INTERPRETER:
                     MAX_RETRIES = 5
