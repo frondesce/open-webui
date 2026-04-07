@@ -561,6 +561,93 @@ def output_has_assistant_message_after_last_tool_output(output: list[dict]) -> b
     return False
 
 
+def append_assistant_output_text(output: list[dict], text: str) -> None:
+    if not text:
+        return
+
+    if output and output[-1].get('type') == 'message':
+        message = output[-1]
+    else:
+        message = {
+            'type': 'message',
+            'id': output_id('msg'),
+            'status': 'in_progress',
+            'role': 'assistant',
+            'content': [],
+        }
+        output.append(message)
+
+    message['status'] = 'completed'
+    parts = message.get('content', [])
+    if parts and parts[-1].get('type') == 'output_text':
+        if parts[-1].get('text') and not parts[-1]['text'].endswith('\n'):
+            parts[-1]['text'] += '\n'
+        parts[-1]['text'] += text
+    else:
+        message['content'] = [{'type': 'output_text', 'text': text}]
+
+
+def decode_response_payload(response):
+    if isinstance(response, Response):
+        body = getattr(response, 'body', b'') or b''
+        if isinstance(body, bytes):
+            text = body.decode('utf-8', 'replace')
+        else:
+            text = str(body)
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    return response
+
+
+def stringify_response_error(error) -> str:
+    if error is None:
+        return ''
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        message = error.get('message') or error.get('detail') or error.get('error')
+        if message:
+            return stringify_response_error(message)
+        return json.dumps(error, ensure_ascii=False)
+    return str(error)
+
+
+def get_non_streaming_follow_up_result(response) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extract assistant content or error text from a non-streaming follow-up response.
+    """
+
+    payload = decode_response_payload(response)
+    status_code = getattr(response, 'status_code', None)
+
+    if isinstance(payload, dict):
+        choices = payload.get('choices') or []
+        if choices:
+            message = choices[0].get('message') or {}
+            content = get_content_from_message(message) or message.get('reasoning_content')
+            if content:
+                return str(content), None
+
+        error = payload.get('error') or payload.get('detail') or payload.get('message')
+        if error:
+            return None, stringify_response_error(error)
+
+    elif isinstance(payload, str):
+        if status_code is None or status_code < 400:
+            return payload, None
+        return None, payload
+
+    if status_code and status_code >= 400:
+        return None, f'HTTP {status_code}'
+
+    return None, None
+
+
 def build_stateless_tool_follow_up_messages(
     messages: list[dict], output: list[dict]
 ) -> list[dict]:
@@ -4196,18 +4283,72 @@ async def streaming_chat_response_handler(response, ctx):
                         get_content_from_message(original_system_message) if original_system_message else None
                     )
 
-                async def run_follow_up_request(new_form_data: dict) -> bool:
+                async def run_follow_up_request(new_form_data: dict, *, emit_error: bool = False) -> bool:
                     nonlocal output
                     nonlocal prior_output
 
-                    res = await generate_chat_completion(
-                        request,
-                        new_form_data,
-                        user,
-                        bypass_system_prompt=True,
-                    )
+                    try:
+                        res = await generate_chat_completion(
+                            request,
+                            new_form_data,
+                            user,
+                            bypass_system_prompt=True,
+                        )
+                    except Exception as e:
+                        log.debug(e)
+                        if emit_error:
+                            error_text = str(e)
+                            append_assistant_output_text(
+                                output,
+                                f'I could not generate the final answer after using tools because the follow-up request failed: {error_text}',
+                            )
+                            await event_emitter(
+                                {
+                                    'type': 'chat:completion',
+                                    'data': {
+                                        'content': serialize_output(full_output()),
+                                        'output': full_output(),
+                                        'error': {'message': error_text},
+                                    },
+                                }
+                            )
+                        return False
 
                     if not isinstance(res, StreamingResponse):
+                        content, error_text = get_non_streaming_follow_up_result(res)
+                        if content:
+                            append_assistant_output_text(output, content)
+                            await event_emitter(
+                                {
+                                    'type': 'chat:completion',
+                                    'data': {
+                                        'content': serialize_output(full_output()),
+                                        'output': full_output(),
+                                    },
+                                }
+                            )
+                            return True
+
+                        status_code = getattr(res, 'status_code', None)
+                        status_suffix = f' (HTTP {status_code})' if status_code else ''
+                        error_text = error_text or f'Unexpected non-streaming follow-up response{status_suffix}'
+                        log.warning(error_text)
+
+                        if emit_error:
+                            append_assistant_output_text(
+                                output,
+                                f'I could not generate the final answer after using tools because the follow-up request failed: {error_text}',
+                            )
+                            await event_emitter(
+                                {
+                                    'type': 'chat:completion',
+                                    'data': {
+                                        'content': serialize_output(full_output()),
+                                        'output': full_output(),
+                                        'error': {'message': error_text},
+                                    },
+                                }
+                            )
                         return False
 
                     # Save accumulated output and start fresh.
@@ -4553,7 +4694,7 @@ async def streaming_chat_response_handler(response, ctx):
                             disallow_tools=True,
                             extra_system_instruction=TOOL_FALLBACK_SYNTHESIS_PROMPT,
                         )
-                        await run_follow_up_request(fallback_form_data)
+                        await run_follow_up_request(fallback_form_data, emit_error=True)
                     except Exception as e:
                         log.debug(e)
 

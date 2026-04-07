@@ -12,7 +12,7 @@ import time
 import asyncio
 from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from open_webui.models.users import UserModel
 from open_webui.routers.retrieval import search_web as _search_web
@@ -565,6 +565,11 @@ async def search_memories(
             return json.dumps(memories, ensure_ascii=False)
         else:
             return json.dumps([])
+    except HTTPException as e:
+        if e.status_code == 404:
+            return json.dumps([])
+        log.exception(f'search_memories error: {e}')
+        return json.dumps({'error': str(e)})
     except Exception as e:
         log.exception(f'search_memories error: {e}')
         return json.dumps({'error': str(e)})

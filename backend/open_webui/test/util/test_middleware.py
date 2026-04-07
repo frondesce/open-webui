@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from open_webui.utils.middleware import (
     TOOL_FALLBACK_SYNTHESIS_PROMPT,
     build_native_tool_follow_up_form_data,
+    get_non_streaming_follow_up_result,
     output_has_assistant_message_after_last_tool_output,
     process_messages_with_output,
 )
@@ -102,6 +103,65 @@ def test_build_native_tool_follow_up_form_data_creates_stateless_tool_free_fallb
         'assistant',
         'tool',
     ]
+
+
+def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_replay():
+    output = [
+        {
+            'type': 'reasoning',
+            'attributes': {'type': 'reasoning_content'},
+            'start_tag': '<think>',
+            'end_tag': '</think>',
+            'content': [{'type': 'output_text', 'text': 'Need to search.'}],
+        },
+        {
+            'type': 'function_call',
+            'call_id': 'call_1',
+            'name': 'search_web',
+            'arguments': '{"query": "OpenClaw"}',
+        },
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_1',
+            'output': [{'type': 'input_text', 'text': '[{"title":"OpenClaw"}]'}],
+        },
+    ]
+
+    assert convert_output_to_messages(output, raw=True) == [
+        {
+            'role': 'assistant',
+            'content': '<think>Need to search.</think>',
+            'tool_calls': [
+                {
+                    'id': 'call_1',
+                    'type': 'function',
+                    'function': {
+                        'name': 'search_web',
+                        'arguments': '{"query": "OpenClaw"}',
+                    },
+                }
+            ],
+            'reasoning_content': 'Need to search.',
+        },
+        {
+            'role': 'tool',
+            'tool_call_id': 'call_1',
+            'content': '[{"title":"OpenClaw"}]',
+        },
+    ]
+
+
+def test_get_non_streaming_follow_up_result_extracts_json_response_error():
+    response = {
+        'error': {
+            'message': 'thinking is enabled but reasoning_content is missing',
+        }
+    }
+
+    assert get_non_streaming_follow_up_result(response) == (
+        None,
+        'thinking is enabled but reasoning_content is missing',
+    )
 
 
 def test_convert_output_to_messages_skips_orphan_tool_output():

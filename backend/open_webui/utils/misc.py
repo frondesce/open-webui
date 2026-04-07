@@ -148,20 +148,23 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
     messages = []
     pending_tool_calls = []
     pending_content = []
+    pending_reasoning_content = []
     seen_function_call_ids = set()
 
     def flush_pending():
-        nonlocal pending_content, pending_tool_calls
+        nonlocal pending_content, pending_tool_calls, pending_reasoning_content
         if pending_content or pending_tool_calls:
-            messages.append(
-                {
-                    'role': 'assistant',
-                    'content': '\n'.join(pending_content) if pending_content else '',
-                    **({'tool_calls': pending_tool_calls} if pending_tool_calls else {}),
-                }
-            )
+            message = {
+                'role': 'assistant',
+                'content': '\n'.join(pending_content) if pending_content else '',
+                **({'tool_calls': pending_tool_calls} if pending_tool_calls else {}),
+            }
+            if pending_tool_calls and pending_reasoning_content:
+                message['reasoning_content'] = ''.join(pending_reasoning_content)
+            messages.append(message)
             pending_content = []
             pending_tool_calls = []
+            pending_reasoning_content = []
 
     for item in output:
         item_type = item.get('type', '')
@@ -256,6 +259,8 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
                 if reasoning_text:
                     start_tag = item.get('start_tag', '<think>')
                     end_tag = item.get('end_tag', '</think>')
+                    if item.get('attributes', {}).get('type') == 'reasoning_content':
+                        pending_reasoning_content.append(reasoning_text)
                     pending_content.append(f'{start_tag}{reasoning_text}{end_tag}')
             # else: skip reasoning blocks for normal LLM messages
 
