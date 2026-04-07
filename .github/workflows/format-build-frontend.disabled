@@ -1,3 +1,4 @@
+# Disabled: Docker image publishing is the only push-time build for this fork.
 name: Frontend Build
 
 on:

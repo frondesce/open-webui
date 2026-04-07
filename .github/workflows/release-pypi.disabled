@@ -1,3 +1,4 @@
+# Disabled: this fork publishes a personal GHCR image instead of PyPI packages.
 name: Release to PyPI
 
 on:
