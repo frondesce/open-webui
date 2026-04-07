@@ -7,7 +7,9 @@ from open_webui.utils.middleware import (
     TOOL_FALLBACK_SYNTHESIS_PROMPT,
     build_native_tool_follow_up_form_data,
     output_has_assistant_message_after_last_tool_output,
+    process_messages_with_output,
 )
+from open_webui.utils.misc import convert_output_to_messages
 
 
 def test_output_has_assistant_message_after_last_tool_output_detects_missing_final_answer():
@@ -99,4 +101,60 @@ def test_build_native_tool_follow_up_form_data_creates_stateless_tool_free_fallb
         'user',
         'assistant',
         'tool',
+    ]
+
+
+def test_convert_output_to_messages_skips_orphan_tool_output():
+    output = [
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_orphan',
+            'output': [{'type': 'input_text', 'text': '{"status":"ok"}'}],
+        },
+        {
+            'type': 'message',
+            'content': [{'type': 'output_text', 'text': 'Final answer'}],
+        },
+    ]
+
+    assert convert_output_to_messages(output, raw=True) == [
+        {
+            'role': 'assistant',
+            'content': 'Final answer',
+        }
+    ]
+
+
+def test_process_messages_with_output_skips_orphan_tool_output():
+    messages = [
+        {
+            'role': 'assistant',
+            'content': 'Final answer',
+            'output': [
+                {
+                    'type': 'function_call_output',
+                    'call_id': 'call_orphan',
+                    'output': [{'type': 'input_text', 'text': '{"status":"ok"}'}],
+                },
+                {
+                    'type': 'message',
+                    'content': [{'type': 'output_text', 'text': 'Final answer'}],
+                },
+            ],
+        },
+        {
+            'role': 'user',
+            'content': 'chatgpt 5.4',
+        },
+    ]
+
+    assert process_messages_with_output(messages) == [
+        {
+            'role': 'assistant',
+            'content': 'Final answer',
+        },
+        {
+            'role': 'user',
+            'content': 'chatgpt 5.4',
+        },
     ]

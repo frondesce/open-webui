@@ -148,6 +148,7 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
     messages = []
     pending_tool_calls = []
     pending_content = []
+    seen_function_call_ids = set()
 
     def flush_pending():
         nonlocal pending_content, pending_tool_calls
@@ -177,13 +178,16 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
 
         elif item_type == 'function_call':
             # Collect tool calls to batch into assistant message
+            call_id = item.get('call_id', '')
             arguments = item.get('arguments', '{}')
             # Ensure arguments is always a JSON string
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments)
+            if call_id:
+                seen_function_call_ids.add(call_id)
             pending_tool_calls.append(
                 {
-                    'id': item.get('call_id', ''),
+                    'id': call_id,
                     'type': 'function',
                     'function': {
                         'name': item.get('name', ''),
@@ -193,6 +197,14 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
             )
 
         elif item_type == 'function_call_output':
+            call_id = item.get('call_id', '')
+            if not call_id or call_id not in seen_function_call_ids:
+                log.warning(
+                    'Skipping orphan function_call_output during output replay: call_id=%s',
+                    call_id or '<missing>',
+                )
+                continue
+
             # Flush any pending content/tool_calls before adding tool result
             flush_pending()
 
@@ -214,7 +226,7 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
                 messages.append(
                     {
                         'role': 'tool',
-                        'tool_call_id': item.get('call_id', ''),
+                        'tool_call_id': call_id,
                         'content': [
                             {'type': 'input_text', 'text': content},
                             *[{'type': 'input_image', 'image_url': url} for url in image_urls],
@@ -225,7 +237,7 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
                 messages.append(
                     {
                         'role': 'tool',
-                        'tool_call_id': item.get('call_id', ''),
+                        'tool_call_id': call_id,
                         'content': content,
                     }
                 )
