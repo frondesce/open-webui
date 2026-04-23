@@ -1,4 +1,5 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
+import { parseErrorResponse, parseJsonResponse } from '$lib/apis/request';
 
 export const createNewKnowledge = async (
 	token: string,
@@ -21,10 +22,7 @@ export const createNewKnowledge = async (
 			access_grants: accessGrants
 		})
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.catch((err) => {
 			error = err.detail;
 			console.error(err);
@@ -52,10 +50,7 @@ export const getKnowledgeBases = async (token: string = '', page: number | null 
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -93,10 +88,7 @@ export const searchKnowledgeBases = async (
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -141,10 +133,7 @@ export const searchKnowledgeFiles = async (
 			}
 		}
 	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -173,10 +162,7 @@ export const getKnowledgeById = async (token: string, id: string) => {
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -223,10 +209,7 @@ export const searchKnowledgeFilesById = async (
 			}
 		}
 	)
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -268,10 +251,7 @@ export const updateKnowledgeById = async (token: string, id: string, form: Knowl
 			access_grants: form.access_grants
 		})
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -305,10 +285,7 @@ export const updateKnowledgeAccessGrants = async (
 		},
 		body: JSON.stringify({ access_grants: accessGrants })
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.catch((err) => {
 			error = err.detail;
 			console.error(err);
@@ -336,10 +313,7 @@ export const addFileToKnowledgeById = async (token: string, id: string, fileId: 
 			file_id: fileId
 		})
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -371,10 +345,7 @@ export const updateFileFromKnowledgeById = async (token: string, id: string, fil
 			file_id: fileId
 		})
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -406,10 +377,7 @@ export const removeFileFromKnowledgeById = async (token: string, id: string, fil
 			file_id: fileId
 		})
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -438,10 +406,7 @@ export const resetKnowledgeById = async (token: string, id: string) => {
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -470,10 +435,7 @@ export const deleteKnowledgeById = async (token: string, id: string) => {
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.then((json) => {
 			return json;
 		})
@@ -502,10 +464,7 @@ export const reindexKnowledgeFiles = async (token: string) => {
 			authorization: `Bearer ${token}`
 		}
 	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
+		.then(parseJsonResponse)
 		.catch((err) => {
 			error = err.detail;
 			console.error(err);
@@ -529,7 +488,7 @@ export const exportKnowledgeById = async (token: string, id: string) => {
 		}
 	})
 		.then(async (res) => {
-			if (!res.ok) throw await res.json();
+			if (!res.ok) throw await parseErrorResponse(res);
 			return res.blob();
 		})
 		.catch((err) => {
