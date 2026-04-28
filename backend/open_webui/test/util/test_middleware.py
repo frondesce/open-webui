@@ -10,7 +10,7 @@ from open_webui.utils.middleware import (
     output_has_assistant_message_after_last_tool_output,
     process_messages_with_output,
 )
-from open_webui.utils.misc import convert_output_to_messages
+from open_webui.utils.misc import convert_output_to_messages, should_preserve_reasoning_content_for_model
 
 
 def test_output_has_assistant_message_after_last_tool_output_detects_missing_final_answer():
@@ -148,6 +148,97 @@ def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_re
             'tool_call_id': 'call_1',
             'content': '[{"title":"OpenClaw"}]',
         },
+    ]
+
+
+def test_should_preserve_reasoning_content_for_deepseek_v4_models():
+    assert should_preserve_reasoning_content_for_model('deepseek-v4') is True
+    assert should_preserve_reasoning_content_for_model('DeepSeek-V4-Pro') is True
+    assert should_preserve_reasoning_content_for_model('new-api.deepseek-v4-pro') is True
+    assert (
+        should_preserve_reasoning_content_for_model(
+            'custom-deepseek',
+            {
+                'id': 'custom-deepseek',
+                'info': {'base_model_id': 'deepseek-v4-pro'},
+            },
+        )
+        is True
+    )
+
+    assert should_preserve_reasoning_content_for_model('kimi-k2.5') is False
+
+
+def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reasoning():
+    output = [
+        {
+            'type': 'reasoning',
+            'attributes': {'type': 'reasoning_content'},
+            'start_tag': '<think>',
+            'end_tag': '</think>',
+            'content': [{'type': 'output_text', 'text': 'Need to search.'}],
+        },
+        {
+            'type': 'function_call',
+            'call_id': 'call_1',
+            'name': 'web_search',
+            'arguments': '{"query": "toothache"}',
+        },
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_1',
+            'output': [{'type': 'input_text', 'text': '[{"title":"Toothache"}]'}],
+        },
+        {
+            'type': 'reasoning',
+            'attributes': {'type': 'reasoning_content'},
+            'start_tag': '<think>',
+            'end_tag': '</think>',
+            'content': [{'type': 'output_text', 'text': 'Use search result to answer.'}],
+        },
+        {
+            'type': 'message',
+            'content': [{'type': 'output_text', 'text': 'See a dentist if symptoms persist.'}],
+        },
+    ]
+
+    messages = [
+        {'role': 'assistant', 'content': '', 'output': output},
+        {'role': 'user', 'content': 'Can it heal itself?'},
+    ]
+
+    default_result = process_messages_with_output(messages)
+    assert 'reasoning_content' in default_result[0]
+    assert 'reasoning_content' not in default_result[2]
+
+    deepseek_result = process_messages_with_output(messages, include_reasoning_content=True)
+    assert deepseek_result == [
+        {
+            'role': 'assistant',
+            'content': '<think>Need to search.</think>',
+            'tool_calls': [
+                {
+                    'id': 'call_1',
+                    'type': 'function',
+                    'function': {
+                        'name': 'web_search',
+                        'arguments': '{"query": "toothache"}',
+                    },
+                }
+            ],
+            'reasoning_content': 'Need to search.',
+        },
+        {
+            'role': 'tool',
+            'tool_call_id': 'call_1',
+            'content': '[{"title":"Toothache"}]',
+        },
+        {
+            'role': 'assistant',
+            'content': '<think>Use search result to answer.</think>\nSee a dentist if symptoms persist.',
+            'reasoning_content': 'Use search result to answer.',
+        },
+        {'role': 'user', 'content': 'Can it heal itself?'},
     ]
 
 

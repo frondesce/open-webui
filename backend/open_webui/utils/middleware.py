@@ -98,6 +98,7 @@ from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
     get_content_from_message,
     convert_output_to_messages,
+    should_preserve_reasoning_content_for_model,
     strip_empty_content_blocks,
 )
 from open_webui.utils.tools import (
@@ -716,7 +717,7 @@ def get_non_streaming_follow_up_result(response) -> tuple[Optional[str], Optiona
 
 
 def build_stateless_tool_follow_up_messages(
-    messages: list[dict], output: list[dict]
+    messages: list[dict], output: list[dict], include_reasoning_content: bool = False
 ) -> list[dict]:
     """
     Build follow-up messages for stateless chat-completions providers.
@@ -725,7 +726,9 @@ def build_stateless_tool_follow_up_messages(
     chat-completions tool messages do not support images across providers.
     """
 
-    tool_messages = convert_output_to_messages(output, raw=True)
+    tool_messages = convert_output_to_messages(
+        output, raw=True, include_reasoning_content=include_reasoning_content
+    )
 
     image_urls = []
     for message in tool_messages:
@@ -787,15 +790,19 @@ def build_native_tool_follow_up_form_data(
     if metadata is not None:
         new_form_data['metadata'] = metadata
 
+    include_reasoning_content = should_preserve_reasoning_content_for_model(model_id)
+
     if not force_stateless and ENABLE_RESPONSES_API_STATEFUL and last_response_id:
         system_message = get_system_message(form_data['messages'])
         follow_up_messages = (
             [copy.deepcopy(system_message)] if system_message else []
-        ) + convert_output_to_messages(output, raw=True)
+        ) + convert_output_to_messages(
+            output, raw=True, include_reasoning_content=include_reasoning_content
+        )
         new_form_data['previous_response_id'] = last_response_id
     else:
         follow_up_messages = build_stateless_tool_follow_up_messages(
-            form_data['messages'], output
+            form_data['messages'], output, include_reasoning_content=include_reasoning_content
         )
         new_form_data.pop('previous_response_id', None)
 
@@ -2387,7 +2394,9 @@ async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[
     return [{k: v for k, v in msg.items() if k in ('role', 'content', 'output', 'files')} for msg in db_messages]
 
 
-def process_messages_with_output(messages: list[dict]) -> list[dict]:
+def process_messages_with_output(
+    messages: list[dict], include_reasoning_content: bool = False
+) -> list[dict]:
     """
     Process messages with OR-aligned output items for LLM consumption.
 
@@ -2399,7 +2408,11 @@ def process_messages_with_output(messages: list[dict]) -> list[dict]:
     for message in messages:
         if message.get('role') == 'assistant' and message.get('output'):
             # Use output items for clean OpenAI-format messages
-            output_messages = convert_output_to_messages(message['output'], raw=True)
+            output_messages = convert_output_to_messages(
+                message['output'],
+                raw=True,
+                include_reasoning_content=include_reasoning_content,
+            )
             if output_messages:
                 processed.extend(output_messages)
                 continue
@@ -2521,7 +2534,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 message.pop('files', None)
 
     # Process messages with OR-aligned output items for clean LLM messages
-    form_data['messages'] = process_messages_with_output(form_data.get('messages', []))
+    form_data['messages'] = process_messages_with_output(
+        form_data.get('messages', []),
+        include_reasoning_content=should_preserve_reasoning_content_for_model(
+            form_data.get('model'), model
+        ),
+    )
 
     system_message = get_system_message(form_data.get('messages', []))
     if system_message:  # Chat Controls/User Settings
@@ -5200,6 +5218,9 @@ async def streaming_chat_response_handler(response, ctx):
                         )
 
                         try:
+                            include_reasoning_content = should_preserve_reasoning_content_for_model(
+                                model_id
+                            )
                             new_form_data = {
                                 **form_data,
                                 'model': model_id,
@@ -5207,7 +5228,11 @@ async def streaming_chat_response_handler(response, ctx):
                                 'metadata': metadata,
                                 'messages': [
                                     *form_data['messages'],
-                                    *convert_output_to_messages(output, raw=True),
+                                    *convert_output_to_messages(
+                                        output,
+                                        raw=True,
+                                        include_reasoning_content=include_reasoning_content,
+                                    ),
                                 ],
                             }
 

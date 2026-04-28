@@ -18,6 +18,9 @@ from open_webui.env import CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
 log = logging.getLogger(__name__)
 
 
+DEEPSEEK_V4_MODEL_PATTERN = re.compile(r'(^|[/.:])deepseek-v4(?:-|$)', re.IGNORECASE)
+
+
 def deep_update(d, u):
     for k, v in u.items():
         if isinstance(v, collections.abc.Mapping):
@@ -25,6 +28,26 @@ def deep_update(d, u):
         else:
             d[k] = v
     return d
+
+
+def is_deepseek_v4_model(model_id: Optional[str]) -> bool:
+    if not model_id:
+        return False
+
+    return bool(DEEPSEEK_V4_MODEL_PATTERN.search(str(model_id)))
+
+
+def should_preserve_reasoning_content_for_model(model_id: Optional[str], model: Optional[dict] = None) -> bool:
+    candidates = [model_id]
+
+    if isinstance(model, dict):
+        candidates.extend([model.get('id'), model.get('name')])
+
+        info = model.get('info')
+        if isinstance(info, dict):
+            candidates.extend([info.get('id'), info.get('name'), info.get('base_model_id')])
+
+    return any(is_deepseek_v4_model(candidate) for candidate in candidates if candidate)
 
 
 def get_allow_block_lists(filter_list):
@@ -129,7 +152,9 @@ def get_content_from_message(message: dict) -> Optional[str]:
     return None
 
 
-def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
+def convert_output_to_messages(
+    output: list, raw: bool = False, include_reasoning_content: bool = False
+) -> list[dict]:
     """
     Convert OR-aligned output items to OpenAI Chat Completion-format messages.
 
@@ -141,6 +166,10 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
         output: List of OR-aligned output items (Responses API format).
         raw: If True, include reasoning blocks (with original tags) and code
              interpreter blocks for LLM re-processing follow-ups.
+        include_reasoning_content: If True, preserve native
+             ``reasoning_content`` on assistant messages even when they do not
+             contain tool calls. DeepSeek V4 requires this for replaying tool
+             calling turns in later requests.
     """
     if not output or not isinstance(output, list):
         return []
@@ -159,7 +188,7 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
                 'content': '\n'.join(pending_content) if pending_content else '',
                 **({'tool_calls': pending_tool_calls} if pending_tool_calls else {}),
             }
-            if pending_tool_calls and pending_reasoning_content:
+            if pending_reasoning_content and (pending_tool_calls or include_reasoning_content):
                 message['reasoning_content'] = ''.join(pending_reasoning_content)
             messages.append(message)
             pending_content = []
