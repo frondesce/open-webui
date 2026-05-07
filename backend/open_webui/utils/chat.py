@@ -40,7 +40,10 @@ from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 
 from open_webui.utils.models import get_all_models, check_model_access
-from open_webui.utils.payload import convert_payload_openai_to_ollama
+from open_webui.utils.payload import (
+    convert_payload_openai_to_ollama,
+    strip_image_content_for_non_vision_model,
+)
 from open_webui.utils.response import (
     convert_response_ollama_to_openai,
     convert_streaming_response_ollama_to_openai,
@@ -192,6 +195,7 @@ async def generate_chat_completion(
         raise Exception('Model not found')
 
     model = models[model_id]
+    form_data = strip_image_content_for_non_vision_model(form_data, model)
 
     if getattr(request.state, 'direct', False):
         return await generate_direct_chat_completion(request, form_data, user=user, models=models)

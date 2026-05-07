@@ -10,6 +10,9 @@ import copy
 import json
 
 
+NON_VISION_IMAGE_OMITTED_MESSAGE = '[Image omitted because the selected model does not support vision.]'
+
+
 # What goes out cannot be taken back. Let it be shaped
 # well before it leaves this place.
 # inplace function: form_data is modified
@@ -80,6 +83,48 @@ def remove_open_webui_params(params: dict) -> dict:
             del params[key]
 
     return params
+
+
+def model_supports_vision(model: dict) -> bool:
+    if not isinstance(model, dict):
+        return True
+
+    capabilities = ((model.get('info') or {}).get('meta') or {}).get('capabilities') or {}
+    return capabilities.get('vision', True)
+
+
+def strip_image_content_for_non_vision_model(form_data: dict, model: dict) -> dict:
+    if model_supports_vision(model):
+        return form_data
+
+    for message in form_data.get('messages', []):
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get('content')
+        if not isinstance(content, list):
+            continue
+
+        text_parts = []
+        saw_image = False
+
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+
+            part_type = part.get('type')
+            if part_type in ('image_url', 'input_image'):
+                saw_image = True
+                continue
+
+            if part_type in ('text', 'input_text', 'output_text'):
+                text = part.get('text', '')
+                text_parts.append(text if isinstance(text, str) else str(text))
+
+        text_content = ''.join(text_parts)
+        message['content'] = text_content if text_content else (NON_VISION_IMAGE_OMITTED_MESSAGE if saw_image else '')
+
+    return form_data
 
 
 # inplace function: form_data is modified

@@ -11,6 +11,115 @@ from open_webui.utils.middleware import (
     process_messages_with_output,
 )
 from open_webui.utils.misc import convert_output_to_messages, should_preserve_reasoning_content_for_model
+from open_webui.utils.payload import (
+    NON_VISION_IMAGE_OMITTED_MESSAGE,
+    model_supports_vision,
+    strip_image_content_for_non_vision_model,
+)
+
+
+NON_VISION_MODEL = {'info': {'meta': {'capabilities': {'vision': False}}}}
+
+
+def test_model_supports_vision_defaults_to_true_when_unset():
+    assert model_supports_vision({}) is True
+    assert model_supports_vision({'info': {'meta': {}}}) is True
+
+
+def test_strip_image_content_for_non_vision_model_keeps_text_only():
+    form_data = {
+        'messages': [
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': 'What is in this image?'},
+                    {'type': 'image_url', 'image_url': {'url': 'https://example.com/cat.png'}},
+                ],
+            }
+        ]
+    }
+
+    result = strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
+
+    assert result is form_data
+    assert form_data['messages'][0]['content'] == 'What is in this image?'
+
+
+def test_strip_image_content_for_non_vision_model_replaces_image_only_message():
+    form_data = {
+        'messages': [
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,abc'}},
+                ],
+            }
+        ]
+    }
+
+    strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
+
+    assert form_data['messages'][0]['content'] == NON_VISION_IMAGE_OMITTED_MESSAGE
+
+
+def test_strip_image_content_for_non_vision_model_handles_input_image_parts():
+    form_data = {
+        'messages': [
+            {
+                'role': 'tool',
+                'content': [
+                    {'type': 'input_text', 'text': 'Tool returned a chart.'},
+                    {'type': 'input_image', 'image_url': 'data:image/png;base64,abc'},
+                ],
+            }
+        ]
+    }
+
+    strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
+
+    assert form_data['messages'][0]['content'] == 'Tool returned a chart.'
+
+
+def test_strip_image_content_for_non_vision_model_leaves_vision_payload_unchanged():
+    form_data = {
+        'messages': [
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': 'Describe this.'},
+                    {'type': 'image_url', 'image_url': {'url': 'https://example.com/image.png'}},
+                ],
+            }
+        ]
+    }
+
+    result = strip_image_content_for_non_vision_model(form_data, {'info': {'meta': {}}})
+
+    assert result is form_data
+    assert form_data['messages'][0]['content'] == [
+        {'type': 'text', 'text': 'Describe this.'},
+        {'type': 'image_url', 'image_url': {'url': 'https://example.com/image.png'}},
+    ]
+
+
+def test_strip_image_content_for_non_vision_model_is_idempotent():
+    form_data = {
+        'messages': [
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'output_text', 'text': 'Prior result.'},
+                    {'type': 'input_image', 'image_url': 'data:image/png;base64,abc'},
+                ],
+            }
+        ]
+    }
+
+    strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
+    first_result = form_data['messages'][0]['content']
+    strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
+
+    assert form_data['messages'][0]['content'] == first_result == 'Prior result.'
 
 
 def test_output_has_assistant_message_after_last_tool_output_detects_missing_final_answer():
