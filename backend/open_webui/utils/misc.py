@@ -1009,64 +1009,65 @@ async def stream_wrapper(response, session, content_handler=None):
 
 def stream_chunks_handler(stream: aiohttp.StreamReader):
     """
-    Handle stream response chunks, supporting large data chunks that exceed the original 16kb limit.
-    When a single line exceeds max_buffer_size, returns an empty JSON string {} and skips subsequent data
-    until encountering normally sized data.
+    Handle stream response chunks without relying on aiohttp's readline().
+    aiohttp's StreamReader async iterator reads line-by-line and raises when a
+    single SSE data line exceeds its internal limit. Reading transport chunks and
+    assembling lines here avoids that limit while preserving SSE framing.
+
+    When max_buffer_size is configured and a single line exceeds it, returns an
+    empty JSON string {} and skips the oversized line.
 
     :param stream: The stream reader to handle.
     :return: An async generator that yields the stream data.
     """
 
     max_buffer_size = CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
-    if max_buffer_size is None or max_buffer_size <= 0:
-        return stream
+    enforce_max_buffer_size = max_buffer_size is not None and max_buffer_size > 0
 
     async def yield_safe_stream_chunks():
         buffer = b''
-        skip_mode = False
+        skip_oversized_line = False
 
         async for data, _ in stream.iter_chunks():
             if not data:
                 continue
 
-            # In skip_mode, if buffer already exceeds the limit, clear it (it's part of an oversized line)
-            if skip_mode and len(buffer) > max_buffer_size:
-                buffer = b''
+            if skip_oversized_line:
+                newline_idx = data.find(b'\n')
+                if newline_idx == -1:
+                    continue
+
+                skip_oversized_line = False
+                yield b'data: {}\n'
+                data = data[newline_idx + 1 :]
+                if not data:
+                    continue
 
             lines = (buffer + data).split(b'\n')
 
             # Process complete lines (except the last possibly incomplete fragment)
-            for i in range(len(lines) - 1):
-                line = lines[i]
+            for line in lines[:-1]:
+                if enforce_max_buffer_size and len(line) > max_buffer_size:
+                    log.info(f'Skipping oversized stream line, line size: {len(line)}')
+                    yield b'data: {}\n'
+                    continue
 
-                if skip_mode:
-                    # Skip mode: check if current line is small enough to exit skip mode
-                    if len(line) <= max_buffer_size:
-                        skip_mode = False
-                        yield line
-                    else:
-                        yield b'data: {}\n'
-                else:
-                    # Normal mode: check if line exceeds limit
-                    if len(line) > max_buffer_size:
-                        skip_mode = True
-                        yield b'data: {}\n'
-                        log.info(f'Skip mode triggered, line size: {len(line)}')
-                    else:
-                        yield line + b'\n'
+                yield line + b'\n'
 
-            # Save the last incomplete fragment
             buffer = lines[-1]
 
-            # Check if buffer exceeds limit
-            if not skip_mode and len(buffer) > max_buffer_size:
-                skip_mode = True
-                log.info(f'Skip mode triggered, buffer size: {len(buffer)}')
-                # Clear oversized buffer to prevent unlimited growth
+            if enforce_max_buffer_size and not skip_oversized_line and len(buffer) > max_buffer_size:
+                skip_oversized_line = True
+                log.info(f'Skipping oversized stream line, buffer size: {len(buffer)}')
                 buffer = b''
 
-        # Process remaining buffer data
-        if buffer and not skip_mode:
-            yield buffer + b'\n'
+        if skip_oversized_line:
+            yield b'data: {}\n'
+        elif buffer:
+            if enforce_max_buffer_size and len(buffer) > max_buffer_size:
+                log.info(f'Skipping oversized stream line, buffer size: {len(buffer)}')
+                yield b'data: {}\n'
+            else:
+                yield buffer + b'\n'
 
     return yield_safe_stream_chunks()
