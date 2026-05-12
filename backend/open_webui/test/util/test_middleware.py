@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from open_webui.utils.middleware import (
     TOOL_FALLBACK_SYNTHESIS_PROMPT,
     build_native_tool_follow_up_form_data,
+    get_reasoning_format,
     get_non_streaming_follow_up_result,
     output_has_assistant_message_after_last_tool_output,
     process_messages_with_output,
@@ -236,10 +237,10 @@ def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_re
         },
     ]
 
-    assert convert_output_to_messages(output, raw=True) == [
+    assert convert_output_to_messages(output, raw=True, reasoning_format='reasoning_content') == [
         {
             'role': 'assistant',
-            'content': '<think>Need to search.</think>',
+            'content': '',
             'tool_calls': [
                 {
                     'id': 'call_1',
@@ -259,6 +260,21 @@ def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_re
         },
     ]
 
+    assert convert_output_to_messages(output, raw=True, reasoning_format='think_tags')[0] == {
+        'role': 'assistant',
+        'content': '<think>Need to search.</think>',
+        'tool_calls': [
+            {
+                'id': 'call_1',
+                'type': 'function',
+                'function': {
+                    'name': 'search_web',
+                    'arguments': '{"query": "OpenClaw"}',
+                },
+            }
+        ],
+    }
+
 
 def test_should_preserve_reasoning_content_for_deepseek_v4_models():
     assert should_preserve_reasoning_content_for_model('deepseek-v4') is True
@@ -276,6 +292,13 @@ def test_should_preserve_reasoning_content_for_deepseek_v4_models():
     )
 
     assert should_preserve_reasoning_content_for_model('kimi-k2.5') is False
+
+
+def test_get_reasoning_format_selects_provider_safe_replay_format():
+    assert get_reasoning_format({'provider': 'ollama'}, 'deepseek-v4') == 'think_tags'
+    assert get_reasoning_format({'provider': 'llama.cpp'}, 'kimi-k2.5') == 'reasoning_content'
+    assert get_reasoning_format({}, 'deepseek-v4') == 'reasoning_content'
+    assert get_reasoning_format({}, 'kimi-k2.5') is None
 
 
 def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reasoning():
@@ -317,14 +340,14 @@ def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reas
     ]
 
     default_result = process_messages_with_output(messages)
-    assert 'reasoning_content' in default_result[0]
+    assert 'reasoning_content' not in default_result[0]
     assert 'reasoning_content' not in default_result[2]
 
-    deepseek_result = process_messages_with_output(messages, include_reasoning_content=True)
+    deepseek_result = process_messages_with_output(messages, reasoning_format='reasoning_content')
     assert deepseek_result == [
         {
             'role': 'assistant',
-            'content': '<think>Need to search.</think>',
+            'content': '',
             'tool_calls': [
                 {
                     'id': 'call_1',
@@ -344,11 +367,17 @@ def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reas
         },
         {
             'role': 'assistant',
-            'content': '<think>Use search result to answer.</think>\nSee a dentist if symptoms persist.',
+            'content': 'See a dentist if symptoms persist.',
             'reasoning_content': 'Use search result to answer.',
         },
         {'role': 'user', 'content': 'Can it heal itself?'},
     ]
+
+    ollama_result = process_messages_with_output(messages, reasoning_format='think_tags')
+    assert ollama_result[0]['content'] == '<think>Need to search.</think>'
+    assert 'reasoning_content' not in ollama_result[0]
+    assert ollama_result[2]['content'] == '<think>Use search result to answer.</think>\nSee a dentist if symptoms persist.'
+    assert 'reasoning_content' not in ollama_result[2]
 
 
 def test_get_non_streaming_follow_up_result_extracts_json_response_error():
