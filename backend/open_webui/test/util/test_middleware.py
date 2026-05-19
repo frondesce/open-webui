@@ -276,6 +276,45 @@ def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_re
     }
 
 
+def test_convert_output_to_messages_sets_empty_reasoning_content_for_tool_call_replay():
+    output = [
+        {
+            'type': 'function_call',
+            'call_id': 'call_1',
+            'name': 'search_web',
+            'arguments': '{"query": "OpenClaw"}',
+        },
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_1',
+            'output': [{'type': 'input_text', 'text': 'result'}],
+        },
+    ]
+
+    assert convert_output_to_messages(output, raw=True, reasoning_format='reasoning_content') == [
+        {
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': [
+                {
+                    'id': 'call_1',
+                    'type': 'function',
+                    'function': {
+                        'name': 'search_web',
+                        'arguments': '{"query": "OpenClaw"}',
+                    },
+                }
+            ],
+            'reasoning_content': '',
+        },
+        {
+            'role': 'tool',
+            'tool_call_id': 'call_1',
+            'content': 'result',
+        },
+    ]
+
+
 def test_should_preserve_reasoning_content_for_deepseek_v4_and_later_models():
     assert should_preserve_reasoning_content_for_model('deepseek-v4') is True
     assert should_preserve_reasoning_content_for_model('DeepSeek-V4-Pro') is True
