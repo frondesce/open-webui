@@ -276,9 +276,11 @@ def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_re
     }
 
 
-def test_should_preserve_reasoning_content_for_deepseek_v4_models():
+def test_should_preserve_reasoning_content_for_deepseek_v4_and_later_models():
     assert should_preserve_reasoning_content_for_model('deepseek-v4') is True
     assert should_preserve_reasoning_content_for_model('DeepSeek-V4-Pro') is True
+    assert should_preserve_reasoning_content_for_model('deepseek-v4.1') is True
+    assert should_preserve_reasoning_content_for_model('deepseek-v5') is True
     assert should_preserve_reasoning_content_for_model('new-api.deepseek-v4-pro') is True
     assert (
         should_preserve_reasoning_content_for_model(
@@ -291,14 +293,52 @@ def test_should_preserve_reasoning_content_for_deepseek_v4_models():
         is True
     )
 
+    assert should_preserve_reasoning_content_for_model('deepseek-v3.9') is False
     assert should_preserve_reasoning_content_for_model('kimi-k2.5') is False
+
+
+def test_should_preserve_reasoning_content_for_mimo_v25_and_later_models():
+    assert should_preserve_reasoning_content_for_model('mimo-v2.5') is True
+    assert should_preserve_reasoning_content_for_model('mimo-v2.5-pro') is True
+    assert should_preserve_reasoning_content_for_model('mimo-v2.5-preview') is True
+    assert should_preserve_reasoning_content_for_model('mimo-v2.6') is True
+    assert should_preserve_reasoning_content_for_model('mimo-v3') is True
+    assert should_preserve_reasoning_content_for_model('new-api.mimo-v2.5-pro') is True
+    assert should_preserve_reasoning_content_for_model('custom-mimo', {'info': None}) is False
+    assert should_preserve_reasoning_content_for_model('mimo-v1') is False
+    assert should_preserve_reasoning_content_for_model('mimo-v2.4') is False
+    assert should_preserve_reasoning_content_for_model('mimo-anything') is False
+
+
+def test_should_preserve_reasoning_content_from_model_capability():
+    assert (
+        should_preserve_reasoning_content_for_model(
+            'custom-model',
+            {
+                'info': {
+                    'meta': {
+                        'capabilities': {
+                            'reasoning_content': True,
+                        },
+                    },
+                },
+            },
+        )
+        is True
+    )
 
 
 def test_get_reasoning_format_selects_provider_safe_replay_format():
     assert get_reasoning_format({'provider': 'ollama'}, 'deepseek-v4') == 'think_tags'
     assert get_reasoning_format({'provider': 'llama.cpp'}, 'kimi-k2.5') == 'reasoning_content'
     assert get_reasoning_format({}, 'deepseek-v4') == 'reasoning_content'
+    assert get_reasoning_format({}, 'deepseek-v5') == 'reasoning_content'
+    assert get_reasoning_format({}, 'mimo-v2.5') == 'reasoning_content'
+    assert get_reasoning_format({}, 'mimo-v2.5-pro') == 'reasoning_content'
+    assert get_reasoning_format({}, 'mimo-v2.6') == 'reasoning_content'
     assert get_reasoning_format({}, 'kimi-k2.5') is None
+    assert get_reasoning_format({}, 'deepseek-v3.9') is None
+    assert get_reasoning_format({}, 'mimo-v1') is None
 
 
 def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reasoning():

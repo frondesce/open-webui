@@ -18,7 +18,20 @@ from open_webui.env import CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
 log = logging.getLogger(__name__)
 
 
-DEEPSEEK_V4_MODEL_PATTERN = re.compile(r'(^|[/.:])deepseek-v4(?:-|$)', re.IGNORECASE)
+DEEPSEEK_MODEL_VERSION_PATTERN = re.compile(
+    r'(^|[/.:])deepseek-v(?P<version>\d+(?:\.\d+)*)(?:-|$)',
+    re.IGNORECASE,
+)
+MIMO_MODEL_VERSION_PATTERN = re.compile(
+    r'(^|[/.:])mimo-v(?P<version>\d+(?:\.\d+)*)(?:-|$)',
+    re.IGNORECASE,
+)
+# Models that use thinking/reasoning mode and require reasoning_content to be
+# passed back in follow-up requests (otherwise the API returns "Param Incorrect").
+REASONING_CONTENT_MODEL_VERSION_PATTERNS = [
+    (DEEPSEEK_MODEL_VERSION_PATTERN, (4,)),
+    (MIMO_MODEL_VERSION_PATTERN, (2, 5)),
+]
 
 
 def deep_update(d, u):
@@ -30,24 +43,61 @@ def deep_update(d, u):
     return d
 
 
-def is_deepseek_v4_model(model_id: Optional[str]) -> bool:
+def _version_at_least(version: str, minimum: tuple[int, ...]) -> bool:
+    version_parts = tuple(int(part) for part in version.split('.'))
+    width = max(len(version_parts), len(minimum))
+    padded_version = version_parts + (0,) * (width - len(version_parts))
+    padded_minimum = minimum + (0,) * (width - len(minimum))
+    return padded_version >= padded_minimum
+
+
+def _matches_minimum_versioned_model(
+    model_id: Optional[str],
+    pattern: re.Pattern,
+    minimum: tuple[int, ...],
+) -> bool:
     if not model_id:
         return False
 
-    return bool(DEEPSEEK_V4_MODEL_PATTERN.search(str(model_id)))
+    match = pattern.search(str(model_id))
+    return bool(match and _version_at_least(match.group('version'), minimum))
+
+
+def is_deepseek_v4_or_later_model(model_id: Optional[str]) -> bool:
+    return _matches_minimum_versioned_model(
+        model_id,
+        DEEPSEEK_MODEL_VERSION_PATTERN,
+        (4,),
+    )
 
 
 def should_preserve_reasoning_content_for_model(model_id: Optional[str], model: Optional[dict] = None) -> bool:
     candidates = [model_id]
 
     if isinstance(model, dict):
+        # Check model metadata for explicit reasoning_content capability.
+        info = model.get('info')
+        if isinstance(info, dict):
+            meta = info.get('meta')
+            if isinstance(meta, dict):
+                capabilities = meta.get('capabilities') or {}
+                if (
+                    isinstance(capabilities, dict)
+                    and capabilities.get('reasoning_content') is True
+                ):
+                    return True
+
         candidates.extend([model.get('id'), model.get('name')])
 
-        info = model.get('info')
         if isinstance(info, dict):
             candidates.extend([info.get('id'), info.get('name'), info.get('base_model_id')])
 
-    return any(is_deepseek_v4_model(candidate) for candidate in candidates if candidate)
+    return any(
+        _matches_minimum_versioned_model(candidate, pattern, minimum)
+        for candidate in candidates
+        if candidate
+        for pattern, minimum in REASONING_CONTENT_MODEL_VERSION_PATTERNS
+    )
 
 
 def get_allow_block_lists(filter_list):
