@@ -245,9 +245,7 @@ def convert_output_to_messages(
             **({'tool_calls': pending_tool_calls} if pending_tool_calls else {}),
         }
 
-        if pending_reasoning or (
-            reasoning_format == 'reasoning_content' and pending_tool_calls
-        ):
+        if pending_reasoning:
             message['reasoning_content'] = ''.join(pending_reasoning)
 
         messages.append(message)
