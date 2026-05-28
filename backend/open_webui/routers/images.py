@@ -31,6 +31,7 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.images.model_patterns import model_id_matches_pattern
+from open_webui.utils.images.openai import extract_openai_image_response_data
 from open_webui.internal.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from open_webui.utils.images.comfyui import (
@@ -507,6 +508,24 @@ async def upload_image(request, image_data, content_type, metadata, user, db=Non
     return file_item, url
 
 
+async def upload_openai_response_images(request, response, data, metadata, user, headers):
+    images = []
+    image_payloads = extract_openai_image_response_data(response)
+    if not image_payloads:
+        raise ValueError('No image data found in response.')
+
+    image_fetch_headers = {k: v for k, v in headers.items() if k.lower() != 'content-type'}
+    for image_payload in image_payloads:
+        image_data, content_type = await get_image_data(image_payload, image_fetch_headers)
+        if not image_data or not content_type:
+            raise ValueError('Failed to load generated image data.')
+
+        _, url = await upload_image(request, image_data, content_type, {**data, **metadata}, user)
+        images.append({'url': url})
+
+    return images
+
+
 @router.post('/generations')
 async def generate_images(request: Request, form_data: CreateImageForm, user=Depends(get_verified_user)):
     if not request.app.state.config.ENABLE_IMAGE_GENERATION:
@@ -597,20 +616,7 @@ async def image_generations(
                 r.raise_for_status()
                 res = await r.json()
 
-            images = []
-
-            for image in res['data']:
-                if image_url := image.get('url', None):
-                    image_data, content_type = await get_image_data(
-                        image_url,
-                        {k: v for k, v in headers.items() if k != 'Content-Type'},
-                    )
-                else:
-                    image_data, content_type = await get_image_data(image['b64_json'])
-
-                _, url = await upload_image(request, image_data, content_type, {**data, **metadata}, user)
-                images.append({'url': url})
-            return images
+            return await upload_openai_response_images(request, res, data, metadata, user, headers)
 
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == 'gemini':
             headers = {
@@ -928,19 +934,7 @@ async def image_edits(
                 r.raise_for_status()
                 res = await r.json()
 
-            images = []
-            for image in res['data']:
-                if image_url := image.get('url', None):
-                    image_data, content_type = await get_image_data(
-                        image_url,
-                        {k: v for k, v in headers.items() if k != 'Content-Type'},
-                    )
-                else:
-                    image_data, content_type = await get_image_data(image['b64_json'])
-
-                _, url = await upload_image(request, image_data, content_type, {**data, **metadata}, user)
-                images.append({'url': url})
-            return images
+            return await upload_openai_response_images(request, res, data, metadata, user, headers)
 
         elif request.app.state.config.IMAGE_EDIT_ENGINE == 'gemini':
             headers = {
