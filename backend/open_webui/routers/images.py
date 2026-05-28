@@ -30,6 +30,7 @@ from open_webui.routers.files import upload_file_handler, get_file_content_by_id
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.headers import include_user_info_headers
+from open_webui.utils.images.model_patterns import model_id_matches_pattern
 from open_webui.internal.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from open_webui.utils.images.comfyui import (
@@ -206,7 +207,7 @@ async def update_config(request: Request, form_data: ImagesConfig, user=Depends(
 
     request.app.state.config.IMAGE_GENERATION_ENGINE = form_data.IMAGE_GENERATION_ENGINE
     await set_image_model(request, form_data.IMAGE_GENERATION_MODEL)
-    if form_data.IMAGE_SIZE == 'auto' and not re.match(
+    if form_data.IMAGE_SIZE == 'auto' and not model_id_matches_pattern(
         IMAGE_AUTO_SIZE_MODELS_REGEX_PATTERN, form_data.IMAGE_GENERATION_MODEL
     ):
         raise HTTPException(
@@ -573,7 +574,7 @@ async def image_generations(
                 ),
                 **(
                     {}
-                    if re.match(
+                    if model_id_matches_pattern(
                         IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN,
                         request.app.state.config.IMAGE_GENERATION_MODEL,
                     )
@@ -883,7 +884,7 @@ async def image_edits(
                 **({'background': form_data.background} if form_data.background else {}),
                 **(
                     {}
-                    if re.match(
+                    if model_id_matches_pattern(
                         IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN,
                         request.app.state.config.IMAGE_EDIT_MODEL,
                     )

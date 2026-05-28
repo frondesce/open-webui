@@ -37,6 +37,7 @@ from open_webui.env import (
     log,
 )
 from open_webui.internal.db import Base, get_db, get_async_db
+from open_webui.utils.images.model_patterns import DEFAULT_GPT_IMAGE_MODEL_REGEX_PATTERN
 from open_webui.utils.redis import get_redis_connection
 
 
@@ -3634,10 +3635,14 @@ IMAGE_GENERATION_MODEL = PersistentConfig(
 )
 
 # Regex pattern for models that support IMAGE_SIZE = "auto".
-IMAGE_AUTO_SIZE_MODELS_REGEX_PATTERN = os.getenv('IMAGE_AUTO_SIZE_MODELS_REGEX_PATTERN', '^gpt-image')
+IMAGE_AUTO_SIZE_MODELS_REGEX_PATTERN = os.getenv(
+    'IMAGE_AUTO_SIZE_MODELS_REGEX_PATTERN', DEFAULT_GPT_IMAGE_MODEL_REGEX_PATTERN
+)
 
 # Regex pattern for models that return URLs instead of base64 data.
-IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN = os.getenv('IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN', '^gpt-image')
+IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN = os.getenv(
+    'IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN', DEFAULT_GPT_IMAGE_MODEL_REGEX_PATTERN
+)
 
 IMAGE_SIZE = PersistentConfig('IMAGE_SIZE', 'image_generation.size', os.getenv('IMAGE_SIZE', '512x512'))
 
