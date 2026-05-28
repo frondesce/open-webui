@@ -115,7 +115,9 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import (
+    append_tools_to_payload,
     apply_system_prompt_to_body,
+    pop_tools_from_params,
     strip_image_content_for_non_vision_model,
 )
 from open_webui.utils.response import normalize_usage
@@ -2294,6 +2296,10 @@ async def chat_completion_files_handler(
 
 def apply_params_to_form_data(form_data, model):
     params = form_data.pop('params', {})
+    params, provider_native_tools = pop_tools_from_params(params)
+    if provider_native_tools is not None:
+        form_data['__provider_native_tools__'] = provider_native_tools
+
     custom_params = params.pop('custom_params', {})
 
     open_webui_params = {
@@ -2520,6 +2526,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             metadata['selected_model_id'] = selected_model_id
 
     form_data = apply_params_to_form_data(form_data, model)
+    provider_native_tools = form_data.pop('__provider_native_tools__', None)
     log.debug(f'form_data: {form_data}')
 
     # Guided regeneration: extract before it reaches the LLM provider
@@ -3110,6 +3117,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     sources.extend(flags.get('sources', []))
                 except Exception as e:
                     log.exception(e)
+
+    # Tools supplied via params/custom_params are provider-native passthrough
+    # tools. Add them after OWI has resolved callable tools so they augment
+    # rather than replace the local tool list.
+    if provider_native_tools:
+        append_tools_to_payload(form_data, provider_native_tools)
 
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)

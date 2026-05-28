@@ -5,7 +5,7 @@ from open_webui.utils.misc import (
     replace_system_message_content,
 )
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 import copy
 import json
 
@@ -85,6 +85,60 @@ def remove_open_webui_params(params: dict) -> dict:
     return params
 
 
+def _parse_json_param_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return value
+
+
+def normalize_tools_param(tools: Any) -> list | None:
+    tools = _parse_json_param_value(tools)
+    if tools is None:
+        return None
+    if isinstance(tools, list):
+        return tools
+    return [tools]
+
+
+def pop_tools_from_params(params: dict) -> tuple[dict, list | None]:
+    """
+    Remove provider-native passthrough tools from model/chat params.
+
+    Keeping these tools out of form_data['tools'] until OWI has resolved its
+    own callable tools prevents params.tools from being mistaken for an
+    explicit request-body tools override.
+    """
+    params = copy.deepcopy(params or {})
+
+    tools = params.pop('tools', None)
+    custom_params = params.get('custom_params')
+    if isinstance(custom_params, dict) and 'tools' in custom_params:
+        tools = custom_params.pop('tools')
+        if not custom_params:
+            params.pop('custom_params', None)
+
+    return params, normalize_tools_param(tools)
+
+
+def append_tools_to_payload(payload: dict, tools: Any) -> dict:
+    tools_list = normalize_tools_param(tools)
+    if not tools_list:
+        return payload
+
+    existing_tools = payload.get('tools')
+    if existing_tools is None:
+        payload['tools'] = tools_list
+    elif isinstance(existing_tools, list):
+        payload['tools'] = [*existing_tools, *tools_list]
+    else:
+        payload['tools'] = [existing_tools, *tools_list]
+
+    return payload
+
+
 def model_supports_vision(model: dict) -> bool:
     if not isinstance(model, dict):
         return True
@@ -129,6 +183,7 @@ def strip_image_content_for_non_vision_model(form_data: dict, model: dict) -> di
 
 # inplace function: form_data is modified
 def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
+    params, provider_native_tools = pop_tools_from_params(params)
     params = remove_open_webui_params(params)
 
     custom_params = params.pop('custom_params', {})
@@ -159,7 +214,8 @@ def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
         'logit_bias': lambda x: x,
         'response_format': dict,
     }
-    return apply_model_params_to_body(params, form_data, mappings)
+    form_data = apply_model_params_to_body(params, form_data, mappings)
+    return append_tools_to_payload(form_data, provider_native_tools)
 
 
 def apply_model_params_to_body_ollama(params: dict, form_data: dict) -> dict:
