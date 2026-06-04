@@ -610,10 +610,7 @@ def output_has_assistant_message_after_last_tool_output(output: list[dict]) -> b
             continue
 
         for content_part in item.get('content', []):
-            if (
-                content_part.get('type') == 'output_text'
-                and content_part.get('text', '').strip()
-            ):
+            if content_part.get('type') == 'output_text' and content_part.get('text', '').strip():
                 return True
 
     return False
@@ -716,9 +713,7 @@ def build_stateless_tool_follow_up_messages(
     chat-completions tool messages do not support images across providers.
     """
 
-    tool_messages = convert_output_to_messages(
-        output, raw=True, reasoning_format=reasoning_format
-    )
+    tool_messages = convert_output_to_messages(output, raw=True, reasoning_format=reasoning_format)
 
     image_urls = []
     for message in tool_messages:
@@ -785,9 +780,7 @@ def build_native_tool_follow_up_form_data(
 
     if not force_stateless and ENABLE_RESPONSES_API_STATEFUL and last_response_id:
         system_message = get_system_message(form_data['messages'])
-        follow_up_messages = (
-            [copy.deepcopy(system_message)] if system_message else []
-        ) + convert_output_to_messages(
+        follow_up_messages = ([copy.deepcopy(system_message)] if system_message else []) + convert_output_to_messages(
             output, raw=True, reasoning_format=reasoning_format
         )
         new_form_data['previous_response_id'] = last_response_id
@@ -4868,10 +4861,7 @@ async def streaming_chat_response_handler(response, ctx):
                         and prior_output[-1].get('status') == 'in_progress'
                     ):
                         msg_parts = prior_output[-1].get('content', [])
-                        if not msg_parts or (
-                            len(msg_parts) == 1
-                            and not msg_parts[0].get('text', '').strip()
-                        ):
+                        if not msg_parts or (len(msg_parts) == 1 and not msg_parts[0].get('text', '').strip()):
                             prior_output.pop()
                     output = []
                     await stream_body_handler(res, new_form_data)

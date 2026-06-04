@@ -82,10 +82,7 @@ def should_preserve_reasoning_content_for_model(model_id: Optional[str], model: 
             meta = info.get('meta')
             if isinstance(meta, dict):
                 capabilities = meta.get('capabilities') or {}
-                if (
-                    isinstance(capabilities, dict)
-                    and capabilities.get('reasoning_content') is True
-                ):
+                if isinstance(capabilities, dict) and capabilities.get('reasoning_content') is True:
                     return True
 
         candidates.extend([model.get('id'), model.get('name')])

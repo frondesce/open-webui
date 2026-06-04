@@ -416,7 +416,9 @@ def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reas
     ollama_result = process_messages_with_output(messages, reasoning_format='think_tags')
     assert ollama_result[0]['content'] == '<think>Need to search.</think>'
     assert 'reasoning_content' not in ollama_result[0]
-    assert ollama_result[2]['content'] == '<think>Use search result to answer.</think>\nSee a dentist if symptoms persist.'
+    assert (
+        ollama_result[2]['content'] == '<think>Use search result to answer.</think>\nSee a dentist if symptoms persist.'
+    )
     assert 'reasoning_content' not in ollama_result[2]
 
 
