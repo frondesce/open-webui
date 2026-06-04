@@ -1,13 +1,13 @@
-from open_webui.utils.task import prompt_template, prompt_variables_template
-from open_webui.utils.misc import (
-    deep_update,
-    add_or_update_system_message,
-    replace_system_message_content,
-)
-
-from typing import Any, Callable, Optional
 import copy
 import json
+from typing import Any, Callable, Optional
+
+from open_webui.utils.misc import (
+    add_or_update_system_message,
+    deep_update,
+    replace_system_message_content,
+)
+from open_webui.utils.task import prompt_template, prompt_variables_template
 
 
 NON_VISION_IMAGE_OMITTED_MESSAGE = '[Image omitted because the selected model does not support vision.]'
