@@ -27,11 +27,16 @@ MIMO_MODEL_VERSION_PATTERN = re.compile(
     r'(^|[/.:])mimo-v(?P<version>\d+(?:\.\d+)*)(?:-|$)',
     re.IGNORECASE,
 )
+KIMI_MODEL_VERSION_PATTERN = re.compile(
+    r'(^|[/.:])kimi[-_ ]+k(?P<version>\d+(?:\.\d+)*)(?:[-_ :]|$)',
+    re.IGNORECASE,
+)
 # Models that use thinking/reasoning mode and require reasoning_content to be
 # passed back in follow-up requests (otherwise the API returns "Param Incorrect").
 REASONING_CONTENT_MODEL_VERSION_PATTERNS = [
     (DEEPSEEK_MODEL_VERSION_PATTERN, (4,)),
     (MIMO_MODEL_VERSION_PATTERN, (2, 5)),
+    (KIMI_MODEL_VERSION_PATTERN, (2, 5)),
 ]
 
 

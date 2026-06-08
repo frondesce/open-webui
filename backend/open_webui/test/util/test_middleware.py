@@ -294,7 +294,6 @@ def test_should_preserve_reasoning_content_for_deepseek_v4_and_later_models():
     )
 
     assert should_preserve_reasoning_content_for_model('deepseek-v3.9') is False
-    assert should_preserve_reasoning_content_for_model('kimi-k2.5') is False
 
 
 def test_should_preserve_reasoning_content_for_mimo_v25_and_later_models():
@@ -308,6 +307,27 @@ def test_should_preserve_reasoning_content_for_mimo_v25_and_later_models():
     assert should_preserve_reasoning_content_for_model('mimo-v1') is False
     assert should_preserve_reasoning_content_for_model('mimo-v2.4') is False
     assert should_preserve_reasoning_content_for_model('mimo-anything') is False
+
+
+def test_should_preserve_reasoning_content_for_kimi_k25_and_later_models():
+    assert should_preserve_reasoning_content_for_model('kimi-k2.5') is True
+    assert should_preserve_reasoning_content_for_model('kimi-k2.6') is True
+    assert should_preserve_reasoning_content_for_model('Kimi K2.6') is True
+    assert should_preserve_reasoning_content_for_model('moonshot/kimi-k2.6-20260420') is True
+    assert (
+        should_preserve_reasoning_content_for_model(
+            'custom-kimi',
+            {
+                'id': 'custom-kimi',
+                'info': {'base_model_id': 'kimi-k2.6'},
+            },
+        )
+        is True
+    )
+
+    assert should_preserve_reasoning_content_for_model('kimi-k2.4') is False
+    assert should_preserve_reasoning_content_for_model('kimi-k2-thinking') is False
+    assert should_preserve_reasoning_content_for_model('kimi-k2-0905-preview') is False
 
 
 def test_should_preserve_reasoning_content_from_model_capability():
@@ -336,9 +356,66 @@ def test_get_reasoning_format_selects_provider_safe_replay_format():
     assert get_reasoning_format({}, 'mimo-v2.5') == 'reasoning_content'
     assert get_reasoning_format({}, 'mimo-v2.5-pro') == 'reasoning_content'
     assert get_reasoning_format({}, 'mimo-v2.6') == 'reasoning_content'
-    assert get_reasoning_format({}, 'kimi-k2.5') is None
+    assert get_reasoning_format({}, 'kimi-k2.5') == 'reasoning_content'
+    assert get_reasoning_format({}, 'kimi-k2.6') == 'reasoning_content'
     assert get_reasoning_format({}, 'deepseek-v3.9') is None
     assert get_reasoning_format({}, 'mimo-v1') is None
+
+
+def test_build_native_tool_follow_up_form_data_preserves_kimi_reasoning_content():
+    form_data = {
+        'model': 'kimi-k2.6',
+        'stream': True,
+        'messages': [
+            {'role': 'user', 'content': 'Search for the latest information.'},
+        ],
+        'tools': [{'type': 'function', 'function': {'name': 'search_web'}}],
+    }
+    output = [
+        {
+            'type': 'reasoning',
+            'attributes': {'type': 'reasoning_content'},
+            'content': [{'type': 'output_text', 'text': 'I need to search the web.'}],
+        },
+        {
+            'type': 'function_call',
+            'call_id': 'call_1',
+            'name': 'search_web',
+            'arguments': '{"query": "latest information"}',
+        },
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_1',
+            'output': [{'type': 'input_text', 'text': '[{"title":"Result"}]'}],
+        },
+    ]
+
+    result = build_native_tool_follow_up_form_data(
+        form_data,
+        'kimi-k2.6',
+        output,
+    )
+
+    assert result['messages'][1] == {
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+            {
+                'id': 'call_1',
+                'type': 'function',
+                'function': {
+                    'name': 'search_web',
+                    'arguments': '{"query": "latest information"}',
+                },
+            }
+        ],
+        'reasoning_content': 'I need to search the web.',
+    }
+    assert result['messages'][2] == {
+        'role': 'tool',
+        'tool_call_id': 'call_1',
+        'content': '[{"title":"Result"}]',
+    }
 
 
 def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reasoning():
