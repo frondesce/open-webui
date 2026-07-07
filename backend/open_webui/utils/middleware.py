@@ -410,6 +410,7 @@ def get_citation_source_from_tool_result(
             }
         ]
 
+
 def split_content_and_whitespace(content):
     content_stripped = content.rstrip()
     original_whitespace = content[len(content_stripped) :] if len(content) > len(content_stripped) else ''
