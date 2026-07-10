@@ -43,6 +43,49 @@ def test_append_tools_to_payload_extends_existing_tools():
     ]
 
 
+def test_append_tools_to_payload_deduplicates_identical_tools():
+    payload = {
+        'tools': [
+            {'type': 'web_search'},
+            {'type': 'x_search'},
+        ]
+    }
+
+    append_tools_to_payload(
+        payload,
+        [
+            {'type': 'web_search'},
+            {'type': 'x_search'},
+            {'type': 'web_search'},
+        ],
+    )
+
+    assert payload['tools'] == [
+        {'type': 'web_search'},
+        {'type': 'x_search'},
+    ]
+
+
+def test_append_tools_to_payload_preserves_distinct_tools_of_the_same_type():
+    payload = {
+        'tools': [
+            {'type': 'function', 'function': {'name': 'get_current_timestamp'}},
+        ]
+    }
+
+    append_tools_to_payload(
+        payload,
+        [
+            {'type': 'function', 'function': {'name': 'calculate_timestamp'}},
+        ],
+    )
+
+    assert payload['tools'] == [
+        {'type': 'function', 'function': {'name': 'get_current_timestamp'}},
+        {'type': 'function', 'function': {'name': 'calculate_timestamp'}},
+    ]
+
+
 def test_apply_model_params_to_body_openai_appends_model_tools():
     payload = {
         'tools': [
@@ -60,4 +103,32 @@ def test_apply_model_params_to_body_openai_appends_model_tools():
     assert result['tools'] == [
         {'type': 'function', 'function': {'name': 'get_current_timestamp'}},
         {'type': 'openrouter:web_search'},
+    ]
+
+
+def test_model_tools_remain_unique_when_applied_in_middleware_and_provider_route():
+    provider_tools = [
+        {'type': 'web_search'},
+        {'type': 'x_search'},
+    ]
+    payload = {
+        'tools': [
+            {'type': 'function', 'function': {'name': 'get_current_timestamp'}},
+        ]
+    }
+    params = {
+        'custom_params': {
+            'tools': provider_tools,
+        }
+    }
+
+    # process_chat_payload merges provider-native tools after resolving OWUI
+    # functions, then the provider route applies the model parameters again.
+    append_tools_to_payload(payload, provider_tools)
+    result = apply_model_params_to_body_openai(params, payload)
+
+    assert result['tools'] == [
+        {'type': 'function', 'function': {'name': 'get_current_timestamp'}},
+        {'type': 'web_search'},
+        {'type': 'x_search'},
     ]

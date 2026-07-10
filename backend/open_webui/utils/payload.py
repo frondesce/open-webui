@@ -9,7 +9,6 @@ from open_webui.utils.misc import (
 )
 from open_webui.utils.task import prompt_template, prompt_variables_template
 
-
 NON_VISION_IMAGE_OMITTED_MESSAGE = '[Image omitted because the selected model does not support vision.]'
 
 
@@ -137,17 +136,29 @@ def pop_tools_from_params(params: dict) -> tuple[dict, list | None]:
 
 
 def append_tools_to_payload(payload: dict, tools: Any) -> dict:
+    """Merge tools into a payload without duplicating identical definitions.
+
+    Model parameters can be applied in both the chat middleware and the
+    provider route.  Keeping this merge idempotent lets those entry points
+    share the same behavior while preserving distinct tools of the same type.
+    """
     tools_list = normalize_tools_param(tools)
     if not tools_list:
         return payload
 
     existing_tools = payload.get('tools')
     if existing_tools is None:
-        payload['tools'] = tools_list
+        existing_tools = []
     elif isinstance(existing_tools, list):
-        payload['tools'] = [*existing_tools, *tools_list]
+        existing_tools = [*existing_tools]
     else:
-        payload['tools'] = [existing_tools, *tools_list]
+        existing_tools = [existing_tools]
+
+    for tool in tools_list:
+        if tool not in existing_tools:
+            existing_tools.append(tool)
+
+    payload['tools'] = existing_tools
 
     return payload
 
