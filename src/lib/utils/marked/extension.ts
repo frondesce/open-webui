@@ -64,6 +64,21 @@ function detailsStart(src: string) {
 	return match?.index ?? -1;
 }
 
+function lheadingTokenizer(this: any, src: string): any {
+	const cap = this.rules.block.lheading.exec(src);
+	const detailsIndex = cap?.[1]?.search(/\n<details[\s>]/) ?? -1;
+	if (!cap || detailsIndex === -1) return false;
+
+	const raw = cap[1].slice(0, detailsIndex + 1);
+	const text = raw.slice(0, -1);
+	return {
+		type: 'paragraph',
+		raw,
+		text,
+		tokens: this.lexer.inline(text)
+	};
+}
+
 function detailsRenderer(token: any) {
 	const attributesString = token.attributes
 		? Object.entries(token.attributes)
@@ -90,6 +105,9 @@ function detailsExtension() {
 
 export default function (options = {}) {
 	return {
-		extensions: [detailsExtension(options)]
+		tokenizer: {
+			lheading: lheadingTokenizer as any
+		},
+		extensions: [detailsExtension()]
 	};
 }
