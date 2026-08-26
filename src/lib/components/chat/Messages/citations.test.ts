@@ -43,12 +43,32 @@ describe('normalizeCitationSource', () => {
 		expect(source.url).toBe(url);
 	});
 
-	it('falls back to the URL when there is no display name', () => {
+	it('falls back to the hostname when there is no display name', () => {
 		const url = 'https://example.com/fallback';
 
 		const source = normalizeCitationSource({}, { source: url }, url);
 
-		expect(source.name).toBe(url);
+		expect(source.name).toBe('example.com');
+		expect(source.url).toBe(url);
+	});
+
+	it('falls back to the hostname when the display name is numeric or blank', () => {
+		const url = 'https://news.example.com/article';
+
+		for (const name of ['2', '  42  ', '   ']) {
+			const source = normalizeCitationSource({}, { source: url, name }, url);
+
+			expect(source.name).toBe('news.example.com');
+			expect(source.url).toBe(url);
+		}
+	});
+
+	it('keeps the existing fallback when the URL cannot be parsed', () => {
+		const url = 'https://';
+
+		const source = normalizeCitationSource({}, { source: url, name: '2' }, url);
+
+		expect(source.name).toBe('2');
 		expect(source.url).toBe(url);
 	});
 });
