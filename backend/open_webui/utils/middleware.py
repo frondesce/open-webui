@@ -2520,7 +2520,6 @@ async def chat_completion_files_handler(
     return body, {'sources': sources}
 
 
-
 async def convert_url_images_to_base64(form_data, user=None):
     messages = form_data.get('messages', [])
 
