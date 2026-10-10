@@ -290,7 +290,11 @@
 			...providerModels.filter((model: ModelListItem) => !allModelIds.has(model.id))
 		];
 		const listedModelIds = new Set(allModels.map((model) => model.id));
-		allModels.push(...savedModels.filter((model) => !listedModelIds.has(model.id)));
+		// Keep inactive workspace presets manageable. Base model overrides only belong
+		// in this list while the provider still advertises the underlying model.
+		allModels.push(
+			...savedModels.filter((model) => isPresetModel(model) && !listedModelIds.has(model.id))
+		);
 
 		models = allModels
 			.map((m: ModelListItem) => {
