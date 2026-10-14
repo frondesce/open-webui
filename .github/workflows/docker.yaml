@@ -78,3 +78,4 @@ jobs:
           cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-main,mode=max
           build-args: |
             BUILD_HASH=${{ github.sha }}
+            BUILD_CHANNEL=main

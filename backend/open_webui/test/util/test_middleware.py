@@ -566,3 +566,118 @@ def test_process_messages_with_output_skips_orphan_tool_output():
             'content': 'chatgpt 5.4',
         },
     ]
+
+
+def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch):
+    """Two tool rounds compact once, then synthesize without duplicating tool history."""
+    import asyncio
+    import copy
+    import json
+    from types import SimpleNamespace
+
+    from fastapi import Request
+    from starlette.responses import StreamingResponse
+
+    from open_webui.utils import middleware
+
+    requests = []
+    emitted = []
+    compacted_inputs = []
+
+    def stream(*deltas):
+        async def body():
+            for delta in deltas:
+                yield 'data: ' + json.dumps({'choices': [{'delta': delta}]}) + '\n\n'
+            yield 'data: [DONE]\n\n'
+
+        return StreamingResponse(body(), media_type='text/event-stream')
+
+    def tool_delta(call_id):
+        return {
+            'tool_calls': [
+                {'index': 0, 'id': call_id, 'type': 'function', 'function': {'name': 'lookup', 'arguments': '{}'}}
+            ]
+        }
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def emit(event):
+        emitted.append(copy.deepcopy(event))
+
+    async def generate(request, form_data, user, **kwargs):
+        requests.append(copy.deepcopy(form_data))
+        if len(requests) == 1:
+            return stream({'reasoning_content': 'second round reasoning'}, tool_delta('call_2'))
+        if len(requests) == 2:
+            return stream()
+        return stream({'content': 'Final answer from tool results.'})
+
+    async def execute(*args):
+        return {}, 'lookup result', {'type': 'builtin'}, 'builtin', False
+
+    async def process_result(request, name, result, *args):
+        return result, [], []
+
+    async def compact(request, user, messages, *args):
+        compacted_inputs.append(copy.deepcopy(messages))
+        if len(compacted_inputs) == 1:
+            return [{'role': 'user', 'content': 'checkpoint'}], 'Earlier lookup completed.', True
+        return messages, None, False
+
+    monkeypatch.setattr(middleware, 'ENABLE_FUNCTIONS', False)
+    monkeypatch.setattr(middleware, 'ENABLE_RESPONSES_API_STATEFUL', False)
+    monkeypatch.setattr(middleware, 'get_system_oauth_token', noop)
+    monkeypatch.setattr(middleware, 'generate_chat_completion', generate)
+    monkeypatch.setattr(middleware, 'execute_tool_call', execute)
+    monkeypatch.setattr(middleware, 'process_tool_result', process_result)
+    monkeypatch.setattr(middleware, 'terminal_event_handler', noop)
+    monkeypatch.setattr(middleware, 'compact_messages_for_request', compact)
+    monkeypatch.setattr(middleware, 'clear_response_stream', noop)
+    monkeypatch.setattr(middleware, 'publish_chat_finished_event', noop)
+    monkeypatch.setattr(middleware, 'outlet_filter_handler', noop)
+    monkeypatch.setattr(middleware, 'background_tasks_handler', noop)
+
+    model = {'id': 'kimi-k2.5'}
+    app = SimpleNamespace(state=SimpleNamespace(redis=None, MODELS={model['id']: model}))
+    request = Request({'type': 'http', 'app': app, 'headers': []})
+    request.state.max_tool_call_iterations = 5
+    ctx = {
+        'request': request,
+        'form_data': {
+            'model': model['id'],
+            'messages': [
+                {'role': 'system', 'content': 'base system'},
+                {'role': 'user', 'content': 'old history to compact'},
+                {'role': 'user', 'content': 'Find the answer.'},
+            ],
+            'tools': [{'type': 'function', 'function': {'name': 'lookup'}}],
+        },
+        'user': SimpleNamespace(id='test-user', role='admin'),
+        'model': model,
+        'metadata': {'chat_id': '', 'params': {'function_calling': 'native', 'tool_approval_mode': 'full'}},
+        'events': [],
+        'event_emitter': emit,
+        'event_caller': None,
+        'tasks': {},
+    }
+    asyncio.run(
+        middleware.streaming_chat_response_handler(
+            stream({'reasoning_content': 'first round reasoning'}, tool_delta('call_1')), ctx
+        )
+    )
+
+    assert len(requests) == 3
+    assert compacted_inputs[0][-2]['reasoning_content'] == 'first round reasoning'
+    assert requests[1]['messages'][-2]['reasoning_content'] == 'second round reasoning'
+    fallback = requests[2]
+    assert 'tools' not in fallback
+    assert 'tool_choice' not in fallback
+    assert any('Earlier lookup completed.' in str(message['content']) for message in fallback['messages'])
+    assert not any('old history to compact' in str(message['content']) for message in fallback['messages'])
+    assert [message['tool_call_id'] for message in fallback['messages'] if message['role'] == 'tool'] == ['call_2']
+    assert TOOL_FALLBACK_SYNTHESIS_PROMPT in fallback['messages'][0]['content']
+    output = ctx['assistant_message']['output']
+    assert [item['call_id'] for item in output if item['type'] == 'function_call_output'] == ['call_1', 'call_2']
+    assert output_has_assistant_message_after_last_tool_output(output)
+    assert not any(event['type'] == 'chat:message:error' for event in emitted)

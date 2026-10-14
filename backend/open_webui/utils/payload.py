@@ -1,7 +1,10 @@
 import copy
 import json
 import logging
+from copy import deepcopy
 from typing import Any, Callable, Optional
+
+from fastapi import HTTPException
 
 from open_webui.utils.chat_variables import render_chat_variables, render_user_variables
 from open_webui.utils.json_codec import JSONCodec
@@ -16,6 +19,23 @@ from open_webui.utils.task import prompt_template, prompt_variables_template
 log = logging.getLogger(__name__)
 
 NON_VISION_IMAGE_OMITTED_MESSAGE = '[Image omitted because the selected model does not support vision.]'
+
+
+def apply_model_controls(params: dict, controls: dict, model_options: dict) -> dict:
+    """Expand approved choices into ordinary Custom Params before normal request processing."""
+    if not isinstance(model_options, dict):
+        raise HTTPException(400, 'Model control options must be an object.')
+    for key, choice in model_options.items():
+        # Picks for removed controls are skipped: the user has no menu left to clear them.
+        if key in controls and (not isinstance(choice, str) or choice not in controls[key]['options']):
+            raise HTTPException(400, f'Model control {key}: the selected option is no longer available.')
+    for key, control in controls.items():
+        choice = model_options.get(key, control.get('default'))
+        if choice is not None:
+            params['custom_params'] = deep_update(
+                deepcopy(params.get('custom_params') or {}), deepcopy(control['options'][choice]['params'])
+            )
+    return params
 
 
 async def resolve_system_prompt(
@@ -104,6 +124,7 @@ def apply_params_to_form_data(form_data: dict, model: dict, params: dict | None 
         'system': str,
         'note_id': str,
         'tool_approval_mode': str,
+        'model_controls': dict,
     }
 
     for key in list(params.keys()):
@@ -159,6 +180,7 @@ def remove_open_webui_params(params: dict) -> dict:
         'system': str,
         'note_id': str,
         'tool_approval_mode': str,
+        'model_controls': dict,
     }
 
     for key in list(params.keys()):
@@ -497,10 +519,6 @@ def convert_payload_openai_to_ollama(openai_payload: dict) -> dict:
     if 'tools' in openai_payload:
         ollama_payload['tools'] = openai_payload['tools']
 
-    if 'max_tokens' in openai_payload:
-        ollama_payload['num_predict'] = openai_payload['max_tokens']
-        del openai_payload['max_tokens']
-
     # If there are advanced parameters in the payload, format them in Ollama's options field
     if openai_payload.get('options'):
         # Copied before key deletions below so the caller's options stay intact
@@ -546,6 +564,11 @@ def convert_payload_openai_to_ollama(openai_payload: dict) -> dict:
     if 'stop' in openai_payload:
         ollama_options = ollama_payload.get('options', {})
         ollama_options['stop'] = openai_payload.get('stop')
+        ollama_payload['options'] = ollama_options
+
+    if 'max_tokens' in openai_payload:
+        ollama_options = ollama_payload.get('options', {})
+        ollama_options['num_predict'] = openai_payload['max_tokens']
         ollama_payload['options'] = ollama_options
 
     if 'metadata' in openai_payload:
