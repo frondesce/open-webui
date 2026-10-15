@@ -49,7 +49,7 @@ async def test_stream_chunks_handler_preserves_large_sse_line_without_readline(m
 
 
 @pytest.mark.asyncio
-async def test_stream_chunks_handler_replaces_configured_oversized_sse_line(monkeypatch):
+async def test_stream_chunks_handler_drops_configured_oversized_sse_line(monkeypatch):
     monkeypatch.setattr(misc, 'CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE', 64)
 
     stream = ChunkedStream(
@@ -61,7 +61,7 @@ async def test_stream_chunks_handler_replaces_configured_oversized_sse_line(monk
         ]
     )
 
-    assert b''.join(await collect_stream_chunks(stream)) == b'data: {}\n\ndata: {"ok":true}\n\n'
+    assert b''.join(await collect_stream_chunks(stream)) == b'\ndata: {"ok":true}\n\n'
 
 
 @pytest.mark.asyncio
@@ -78,4 +78,16 @@ async def test_stream_chunks_handler_discards_continued_oversized_line_fragments
         ]
     )
 
-    assert b''.join(await collect_stream_chunks(stream)) == b'data: {}\n\ndata: {"ok":true}\n\n'
+    assert b''.join(await collect_stream_chunks(stream)) == b'\ndata: {"ok":true}\n\n'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'chunks', [[b'data: ' + b'x' * 100 + b'\n\n'], [b'data: ', b'x' * 100, b'\n\n'], [b'data: ' + b'x' * 100]]
+)
+async def test_stream_chunks_handler_does_not_fabricate_events_for_dropped_lines(monkeypatch, chunks):
+    monkeypatch.setattr(misc, 'CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE', 64)
+
+    result = b''.join(await collect_stream_chunks(ChunkedStream(chunks)))
+
+    assert result in (b'', b'\n')

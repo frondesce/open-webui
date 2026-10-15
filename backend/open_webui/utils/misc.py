@@ -110,14 +110,6 @@ def _matches_minimum_versioned_model(
     return bool(match and _version_at_least(match.group('version'), minimum))
 
 
-def is_deepseek_v4_or_later_model(model_id: Optional[str]) -> bool:
-    return _matches_minimum_versioned_model(
-        model_id,
-        DEEPSEEK_MODEL_VERSION_PATTERN,
-        (4,),
-    )
-
-
 def should_preserve_reasoning_content_for_model(model_id: Optional[str], model: Optional[dict] = None) -> bool:
     candidates = [model_id]
 
@@ -1362,8 +1354,7 @@ def stream_chunks_handler(stream: aiohttp.StreamReader):
     """
     Assemble lines from raw chunks, so a line over aiohttp's reader limit no longer aborts the stream.
 
-    When max_buffer_size is configured and a single line exceeds it, returns an
-    empty JSON string {} and skips the oversized line.
+    When CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE is set, a line exceeding it is dropped.
 
     :param stream: The stream reader to handle.
     :return: An async generator that yields the stream one line at a time.
@@ -1387,7 +1378,6 @@ def stream_chunks_handler(stream: aiohttp.StreamReader):
                     continue
 
                 dropping_line_tail = False
-                yield b'data: {}\n'
                 data = data[newline_idx + 1 :]
                 if not data:
                     continue
@@ -1401,20 +1391,17 @@ def stream_chunks_handler(stream: aiohttp.StreamReader):
 
                 for line in lines:
                     if len(line) > max_buffer_size:
-                        log.info('Replacing line over max buffer size: %s bytes', len(line))
-                        yield b'data: {}\n'
+                        log.info('Dropped line over max buffer size: %s bytes', len(line))
                     else:
                         yield line + b'\n'
 
             # Oversized line still arriving: drop it instead of buffering the rest
             if len(buffer) > max_buffer_size:
-                log.info('Replacing line over max buffer size, buffered so far: %s bytes', len(buffer))
+                log.info('Dropping line over max buffer size, buffered so far: %s bytes', len(buffer))
                 dropping_line_tail = True
                 buffer.clear()
 
-        if dropping_line_tail:
-            yield b'data: {}\n'
-        elif buffer:
+        if buffer and not dropping_line_tail:
             yield bytes(buffer)
 
     return yield_safe_stream_chunks()

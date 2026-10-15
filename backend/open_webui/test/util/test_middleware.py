@@ -1,14 +1,13 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from open_webui.utils.middleware import (
-    TOOL_FALLBACK_SYNTHESIS_PROMPT,
-    build_native_tool_follow_up_form_data,
     get_reasoning_format,
     get_non_streaming_follow_up_result,
-    output_has_assistant_message_after_last_tool_output,
     process_messages_with_output,
 )
 from open_webui.utils.misc import convert_output_to_messages, should_preserve_reasoning_content_for_model
@@ -121,98 +120,6 @@ def test_strip_image_content_for_non_vision_model_is_idempotent():
     strip_image_content_for_non_vision_model(form_data, NON_VISION_MODEL)
 
     assert form_data['messages'][0]['content'] == first_result == 'Prior result.'
-
-
-def test_output_has_assistant_message_after_last_tool_output_detects_missing_final_answer():
-    output = [
-        {
-            'type': 'message',
-            'content': [{'type': 'output_text', 'text': 'Let me check that.'}],
-        },
-        {
-            'type': 'function_call',
-            'call_id': 'call_1',
-            'name': 'search_web',
-            'arguments': '{}',
-        },
-        {
-            'type': 'function_call_output',
-            'call_id': 'call_1',
-            'output': [{'type': 'input_text', 'text': '{"status":"ok"}'}],
-        },
-    ]
-
-    assert output_has_assistant_message_after_last_tool_output(output) is False
-
-
-def test_output_has_assistant_message_after_last_tool_output_accepts_post_tool_answer():
-    output = [
-        {
-            'type': 'function_call_output',
-            'call_id': 'call_1',
-            'output': [{'type': 'input_text', 'text': '{"status":"ok"}'}],
-        },
-        {
-            'type': 'reasoning',
-            'content': [{'type': 'output_text', 'text': 'thinking'}],
-        },
-        {
-            'type': 'message',
-            'content': [{'type': 'output_text', 'text': 'Add water first, then the tablet.'}],
-        },
-    ]
-
-    assert output_has_assistant_message_after_last_tool_output(output) is True
-
-
-def test_build_native_tool_follow_up_form_data_creates_stateless_tool_free_fallback():
-    form_data = {
-        'model': 'kimi-k2.5',
-        'stream': True,
-        'messages': [
-            {'role': 'system', 'content': 'base system'},
-            {'role': 'user', 'content': 'How do I use the cleaning tablet?'},
-        ],
-        'tools': [{'type': 'function', 'function': {'name': 'search_web'}}],
-        'tool_choice': 'auto',
-        'previous_response_id': 'resp_123',
-    }
-    output = [
-        {
-            'type': 'function_call',
-            'call_id': 'call_1',
-            'name': 'search_web',
-            'arguments': '{}',
-        },
-        {
-            'type': 'function_call_output',
-            'call_id': 'call_1',
-            'output': [{'type': 'input_text', 'text': '{"status":"ok"}'}],
-        },
-    ]
-
-    result = build_native_tool_follow_up_form_data(
-        form_data,
-        'kimi-k2.5',
-        output,
-        last_response_id='resp_123',
-        force_stateless=True,
-        disallow_tools=True,
-        extra_system_instruction=TOOL_FALLBACK_SYNTHESIS_PROMPT,
-    )
-
-    assert result['model'] == 'kimi-k2.5'
-    assert result['stream'] is True
-    assert 'tools' not in result
-    assert 'tool_choice' not in result
-    assert 'previous_response_id' not in result
-    assert TOOL_FALLBACK_SYNTHESIS_PROMPT in result['messages'][0]['content']
-    assert [message['role'] for message in result['messages']] == [
-        'system',
-        'user',
-        'assistant',
-        'tool',
-    ]
 
 
 def test_convert_output_to_messages_preserves_reasoning_content_for_tool_call_replay():
@@ -360,62 +267,6 @@ def test_get_reasoning_format_selects_provider_safe_replay_format():
     assert get_reasoning_format({}, 'kimi-k2.6') == 'reasoning_content'
     assert get_reasoning_format({}, 'deepseek-v3.9') is None
     assert get_reasoning_format({}, 'mimo-v1') is None
-
-
-def test_build_native_tool_follow_up_form_data_preserves_kimi_reasoning_content():
-    form_data = {
-        'model': 'kimi-k2.6',
-        'stream': True,
-        'messages': [
-            {'role': 'user', 'content': 'Search for the latest information.'},
-        ],
-        'tools': [{'type': 'function', 'function': {'name': 'search_web'}}],
-    }
-    output = [
-        {
-            'type': 'reasoning',
-            'attributes': {'type': 'reasoning_content'},
-            'content': [{'type': 'output_text', 'text': 'I need to search the web.'}],
-        },
-        {
-            'type': 'function_call',
-            'call_id': 'call_1',
-            'name': 'search_web',
-            'arguments': '{"query": "latest information"}',
-        },
-        {
-            'type': 'function_call_output',
-            'call_id': 'call_1',
-            'output': [{'type': 'input_text', 'text': '[{"title":"Result"}]'}],
-        },
-    ]
-
-    result = build_native_tool_follow_up_form_data(
-        form_data,
-        'kimi-k2.6',
-        output,
-    )
-
-    assert result['messages'][1] == {
-        'role': 'assistant',
-        'content': '',
-        'tool_calls': [
-            {
-                'id': 'call_1',
-                'type': 'function',
-                'function': {
-                    'name': 'search_web',
-                    'arguments': '{"query": "latest information"}',
-                },
-            }
-        ],
-        'reasoning_content': 'I need to search the web.',
-    }
-    assert result['messages'][2] == {
-        'role': 'tool',
-        'tool_call_id': 'call_1',
-        'content': '[{"title":"Result"}]',
-    }
 
 
 def test_process_messages_with_output_preserves_deepseek_v4_final_tool_turn_reasoning():
@@ -568,15 +419,16 @@ def test_process_messages_with_output_skips_orphan_tool_output():
     ]
 
 
-def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch):
-    """Two tool rounds compact once, then synthesize without duplicating tool history."""
+@pytest.mark.parametrize('follow_up', ['empty', 'stream', 'json', 'error', 'exception', 'limit'])
+def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, follow_up):
+    """Preserve compacted tool history and stop without an extra synthesis request."""
     import asyncio
     import copy
     import json
     from types import SimpleNamespace
 
-    from fastapi import Request
-    from starlette.responses import StreamingResponse
+    from fastapi import HTTPException, Request
+    from starlette.responses import JSONResponse, StreamingResponse
 
     from open_webui.utils import middleware
 
@@ -609,9 +461,18 @@ def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch
         requests.append(copy.deepcopy(form_data))
         if len(requests) == 1:
             return stream({'reasoning_content': 'second round reasoning'}, tool_delta('call_2'))
-        if len(requests) == 2:
-            return stream()
-        return stream({'content': 'Final answer from tool results.'})
+        assert len(requests) == 2, 'Unexpected extra model request after the tool continuation'
+        if follow_up == 'stream':
+            return stream({'content': 'Final answer from tool results.'})
+        if follow_up == 'json':
+            return JSONResponse(
+                {'choices': [{'message': {'role': 'assistant', 'content': 'Final answer from tool results.'}}]}
+            )
+        if follow_up == 'error':
+            return JSONResponse({'error': {'message': 'Provider unavailable'}}, status_code=502)
+        if follow_up == 'exception':
+            raise HTTPException(status_code=503, detail='Provider unavailable')
+        return stream()
 
     async def execute(*args):
         return {}, 'lookup result', {'type': 'builtin'}, 'builtin', False
@@ -622,7 +483,8 @@ def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch
     async def compact(request, user, messages, *args):
         compacted_inputs.append(copy.deepcopy(messages))
         if len(compacted_inputs) == 1:
-            return [{'role': 'user', 'content': 'checkpoint'}], 'Earlier lookup completed.', True
+            system_messages = [message for message in messages if message.get('role') == 'system']
+            return [*system_messages, {'role': 'user', 'content': 'checkpoint'}], 'Earlier lookup completed.', True
         return messages, None, False
 
     monkeypatch.setattr(middleware, 'ENABLE_FUNCTIONS', False)
@@ -641,7 +503,7 @@ def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch
     model = {'id': 'kimi-k2.5'}
     app = SimpleNamespace(state=SimpleNamespace(redis=None, MODELS={model['id']: model}))
     request = Request({'type': 'http', 'app': app, 'headers': []})
-    request.state.max_tool_call_iterations = 5
+    request.state.max_tool_call_iterations = 1 if follow_up == 'limit' else 5
     ctx = {
         'request': request,
         'form_data': {
@@ -652,6 +514,7 @@ def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch
                 {'role': 'user', 'content': 'Find the answer.'},
             ],
             'tools': [{'type': 'function', 'function': {'name': 'lookup'}}],
+            'tool_choice': 'auto',
         },
         'user': SimpleNamespace(id='test-user', role='admin'),
         'model': model,
@@ -667,17 +530,36 @@ def test_tool_loop_compaction_keeps_reasoning_and_tool_free_fallback(monkeypatch
         )
     )
 
-    assert len(requests) == 3
+    assert len(requests) == (1 if follow_up == 'limit' else 2)
     assert compacted_inputs[0][-2]['reasoning_content'] == 'first round reasoning'
-    assert requests[1]['messages'][-2]['reasoning_content'] == 'second round reasoning'
-    fallback = requests[2]
-    assert 'tools' not in fallback
-    assert 'tool_choice' not in fallback
-    assert any('Earlier lookup completed.' in str(message['content']) for message in fallback['messages'])
-    assert not any('old history to compact' in str(message['content']) for message in fallback['messages'])
-    assert [message['tool_call_id'] for message in fallback['messages'] if message['role'] == 'tool'] == ['call_2']
-    assert TOOL_FALLBACK_SYNTHESIS_PROMPT in fallback['messages'][0]['content']
+    last_request = requests[-1]
+    assert last_request['tools'] == ctx['form_data']['tools']
+    assert last_request['tool_choice'] == 'auto'
+    assert last_request['messages'][0]['role'] == 'system'
+    assert last_request['messages'][0]['content'] == 'base system\n[CONVERSATION SUMMARY]\nEarlier lookup completed.'
+    assert any('Earlier lookup completed.' in str(message['content']) for message in last_request['messages'])
+    assert not any('old history to compact' in str(message['content']) for message in last_request['messages'])
+    if follow_up != 'limit':
+        assert last_request['messages'][-2]['reasoning_content'] == 'second round reasoning'
+        assert [message['tool_call_id'] for message in last_request['messages'] if message['role'] == 'tool'] == [
+            'call_2'
+        ]
+
     output = ctx['assistant_message']['output']
-    assert [item['call_id'] for item in output if item['type'] == 'function_call_output'] == ['call_1', 'call_2']
-    assert output_has_assistant_message_after_last_tool_output(output)
-    assert not any(event['type'] == 'chat:message:error' for event in emitted)
+    expected_calls = ['call_1'] if follow_up == 'limit' else ['call_1', 'call_2']
+    assert [item['call_id'] for item in output if item['type'] == 'function_call_output'] == expected_calls
+    assert any(event['type'] == 'chat:completion' and event['data'].get('done') for event in emitted)
+    answer = ''.join(
+        part.get('text', '') for item in output if item['type'] == 'message' for part in item.get('content', [])
+    )
+    errors = [event['data']['error']['content'] for event in emitted if event['type'] == 'chat:message:error']
+    if follow_up in {'stream', 'json'}:
+        assert answer == 'Final answer from tool results.'
+    else:
+        assert answer == ''
+    if follow_up in {'error', 'exception'}:
+        assert errors == ['Provider unavailable']
+    elif follow_up == 'limit':
+        assert errors == ['Tool-call limit reached (1 iterations).']
+    else:
+        assert errors == []

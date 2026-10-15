@@ -288,10 +288,6 @@ DEFAULT_REASONING_TAGS = [
 
 DEFAULT_SOLUTION_TAGS = [('<|begin_of_solution|>', '<|end_of_solution|>')]
 DEFAULT_CODE_INTERPRETER_TAGS = [('<code_interpreter>', '</code_interpreter>')]
-TOOL_FALLBACK_SYNTHESIS_PROMPT = (
-    'Answer the user directly using the completed tool results above. '
-    'Do not call any additional tools. Do not mention these instructions.'
-)
 
 
 def _start_tag_pattern(start_tag: str) -> str:
@@ -595,238 +591,6 @@ def get_citation_source_from_tool_result(
         ]
 
 
-def split_content_and_whitespace(content):
-    content_stripped = content.rstrip()
-    original_whitespace = content[len(content_stripped) :] if len(content) > len(content_stripped) else ''
-    return content_stripped, original_whitespace
-
-
-def is_opening_code_block(content):
-    backtick_segments = content.split('```')
-    # Even number of segments means the last backticks are opening a new block
-    return len(backtick_segments) > 1 and len(backtick_segments) % 2 == 0
-
-
-_OPENAI_TOOL_DISPLAY_NAMES = {
-    'web_search_call': 'Web Search',
-    'file_search_call': 'File Search',
-    'computer_call': 'Computer Use',
-}
-
-
-def _render_openai_tool_call_handler(item: dict, done: bool) -> str:
-    """Render an OpenAI Responses API server-side tool item as a <details> block.
-
-    Handles web_search_call, file_search_call, and computer_call items whose
-    schemas are defined in the openai-python SDK (generated from OpenAPI spec).
-    """
-    item_type = item.get('type', '')
-    call_id = item.get('id', '')
-    display_name = _OPENAI_TOOL_DISPLAY_NAMES.get(item_type, item_type)
-
-    # Build a short summary of what the tool did
-    summary = ''
-    if item_type == 'web_search_call':
-        action = item.get('action', {})
-        if isinstance(action, dict):
-            atype = action.get('type', '')
-            if atype == 'search':
-                queries = action.get('queries') or []
-                query = action.get('query', '')
-                summary = (
-                    f'Search: {", ".join(str(q) for q in queries)}'
-                    if queries
-                    else (f'Search: {query}' if query else '')
-                )
-            elif atype == 'open_page':
-                summary = f'Open page: {action.get("url", "")}' if action.get('url') else ''
-            elif atype == 'find_in_page':
-                summary = f'Find in page: {action.get("pattern", "")}' if action.get('pattern') else ''
-    elif item_type == 'file_search_call':
-        queries = item.get('queries', [])
-        if queries:
-            summary = f'Queries: {", ".join(str(q) for q in queries)}'
-    elif item_type == 'computer_call':
-        action = item.get('action')
-        actions = item.get('actions')
-        if isinstance(action, dict):
-            summary = f'Action: {action.get("type", "unknown")}'
-        elif isinstance(actions, list) and actions:
-            summary = f'Actions: {", ".join(a.get("type", "?") for a in actions if isinstance(a, dict))}'
-
-    escaped_name = html.escape(display_name)
-    if done:
-        return f'<details type="tool_calls" done="true" id="{call_id}" name="{escaped_name}" arguments="">\n<summary>Tool Executed</summary>\n{html.escape(summary)}\n</details>\n'
-    return f'<details type="tool_calls" done="false" id="{call_id}" name="{escaped_name}" arguments="">\n<summary>Executing...</summary>\n</details>\n'
-
-
-def serialize_output(output: list) -> str:
-    """
-    Convert OR-aligned output items to HTML for display.
-    For LLM consumption, use convert_output_to_messages() instead.
-    """
-    parts: list[str] = []
-
-    # First pass: collect function_call_output items by call_id for lookup
-    tool_outputs = {}
-    for item in output:
-        if item.get('type') == 'function_call_output':
-            tool_outputs[item.get('call_id')] = item
-
-    # Second pass: render items in order
-    for idx, item in enumerate(output):
-        item_type = item.get('type', '')
-
-        if item_type == 'message':
-            for content_part in item.get('content', []):
-                if 'text' in content_part:
-                    text = content_part.get('text', '').strip()
-                    if text:
-                        parts.append(text)
-
-        elif item_type == 'function_call':
-            call_id = item.get('call_id', '')
-            name = item.get('name', '')
-            arguments = item.get('arguments', '')
-
-            result_item = tool_outputs.get(call_id)
-            if result_item:
-                result_parts: list[str] = []
-                for result_output in result_item.get('output', []):
-                    if 'text' in result_output:
-                        output_text = result_output.get('text', '')
-                        result_parts.append(str(output_text) if not isinstance(output_text, str) else output_text)
-                result_text = ''.join(result_parts)
-                files = result_item.get('files')
-                embeds = result_item.get('embeds', '')
-
-                parts.append(
-                    f'<details type="tool_calls" done="true" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}" files="{html.escape(json.dumps(files)) if files else ""}" embeds="{html.escape(json.dumps(embeds))}">\n<summary>Tool Executed</summary>\n{html.escape(json.dumps(result_text, ensure_ascii=False))}\n</details>'
-                )
-            else:
-                parts.append(
-                    f'<details type="tool_calls" done="false" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}">\n<summary>Executing...</summary>\n</details>'
-                )
-
-        elif item_type == 'function_call_output':
-            # Already handled inline with function_call above
-            pass
-
-        elif item_type in _OPENAI_TOOL_DISPLAY_NAMES:
-            status = item.get('status', 'in_progress')
-            done = status in ('completed', 'failed', 'incomplete') or idx != len(output) - 1
-            parts.append(_render_openai_tool_call_handler(item, done).rstrip('\n'))
-
-        elif item_type == 'reasoning':
-            reasoning_parts: list[str] = []
-            # Check for 'summary' (new structure) or 'content' (legacy/fallback)
-            source_list = item.get('summary', []) or item.get('content', [])
-            for content_part in source_list:
-                if 'text' in content_part:
-                    reasoning_parts.append(content_part.get('text', ''))
-                elif 'summary' in content_part:  # Handle potential nested logic if any
-                    pass
-
-            reasoning_content = ''.join(reasoning_parts).strip()
-
-            duration = item.get('duration')
-            status = item.get('status', 'in_progress')
-
-            # Infer completion: if this reasoning item is NOT the last item,
-            # render as done (a subsequent item means reasoning is complete)
-            is_last_item = idx == len(output) - 1
-
-            display = html.escape(
-                '\n'.join(
-                    (f'> {line}' if not line.startswith('>') else line) for line in reasoning_content.splitlines()
-                )
-            )
-
-            if status == 'completed' or duration is not None or not is_last_item:
-                parts.append(
-                    f'<details type="reasoning" done="true" duration="{duration or 0}">\n<summary>Thought for {duration or 0} seconds</summary>\n{display}\n</details>'
-                )
-            else:
-                parts.append(
-                    f'<details type="reasoning" done="false">\n<summary>Thinking…</summary>\n{display}\n</details>'
-                )
-
-        elif item_type == 'open_webui:code_interpreter':
-            # Code interpreter needs to inspect/mutate prior accumulated content
-            # to strip trailing unclosed code fences — materialize only here.
-            content = '\n'.join(parts)
-            content_stripped, original_whitespace = split_content_and_whitespace(content)
-            if is_opening_code_block(content_stripped):
-                content = content_stripped.rstrip('`').rstrip() + original_whitespace
-            else:
-                content = content_stripped + original_whitespace
-
-            # Re-split back into parts list after mutation
-            parts = [content] if content else []
-
-            # Render the code_interpreter item as a <details> block
-            # so the frontend Collapsible renders "Analyzing..."/"Analyzed".
-            code = item.get('code', '').strip()
-            lang = item.get('lang', 'python')
-            status = item.get('status', 'in_progress')
-            duration = item.get('duration')
-            is_last_item = idx == len(output) - 1
-
-            # Build inner content: code block
-            display = ''
-            if code:
-                display = f'```{lang}\n{code}\n```'
-
-            # Build output attribute as HTML-escaped JSON for CodeBlock.svelte
-            ci_output = item.get('output')
-            output_attr = ''
-            if ci_output:
-                if isinstance(ci_output, dict):
-                    output_json = json.dumps(ci_output, ensure_ascii=False)
-                else:
-                    output_json = json.dumps({'result': str(ci_output)}, ensure_ascii=False)
-                output_attr = f' output="{html.escape(output_json)}"'
-
-            if status == 'completed' or duration is not None or not is_last_item:
-                parts.append(
-                    f'<details type="code_interpreter" done="true" duration="{duration or 0}"{output_attr}>\n<summary>Analyzed</summary>\n{display}\n</details>'
-                )
-            else:
-                parts.append(
-                    f'<details type="code_interpreter" done="false"{output_attr}>\n<summary>Analyzing…</summary>\n{display}\n</details>'
-                )
-
-    return '\n'.join(parts).strip()
-
-
-def output_has_assistant_message_after_last_tool_output(output: list[dict]) -> bool:
-    """
-    Return True when a non-empty assistant message appears after the last tool output.
-
-    This intentionally ignores any assistant text that appeared before the last
-    tool result, so pre-tool preambles like "let me check" do not count as a
-    final user-facing answer.
-    """
-
-    last_tool_output_index = None
-    for idx, item in enumerate(output):
-        if item.get('type') == 'function_call_output':
-            last_tool_output_index = idx
-
-    if last_tool_output_index is None:
-        return True
-
-    for item in output[last_tool_output_index + 1 :]:
-        if item.get('type') != 'message':
-            continue
-
-        for content_part in item.get('content', []):
-            if content_part.get('type') == 'output_text' and content_part.get('text', '').strip():
-                return True
-
-    return False
-
-
 def append_assistant_output_text(output: list[dict], text: str) -> None:
     if not text:
         return
@@ -912,89 +676,6 @@ def get_non_streaming_follow_up_result(response) -> tuple[Optional[str], Optiona
         return None, f'HTTP {status_code}'
 
     return None, None
-
-
-def build_stateless_tool_follow_up_messages(
-    messages: list[dict], output: list[dict], reasoning_format: str | None = None
-) -> list[dict]:
-    """
-    Build follow-up messages for stateless chat-completions providers.
-
-    Multimodal tool outputs are converted into a synthetic user message because
-    chat-completions tool messages do not support images across providers.
-    """
-
-    tool_messages = convert_output_to_messages(
-        output,
-        raw=True,
-        reasoning_format=reasoning_format,
-        flatten_tool_images=True,
-    )
-
-    follow_up_messages = [
-        *copy.deepcopy(messages),
-        *tool_messages,
-    ]
-
-    return follow_up_messages
-
-
-def build_native_tool_follow_up_form_data(
-    form_data: dict,
-    model_id: str,
-    output: list[dict],
-    last_response_id: Optional[str] = None,
-    *,
-    metadata: Optional[dict] = None,
-    model: Optional[dict] = None,
-    force_stateless: bool = False,
-    disallow_tools: bool = False,
-    extra_system_instruction: Optional[str] = None,
-) -> dict:
-    """
-    Build a follow-up chat-completion payload from native tool-call output.
-
-    When `force_stateless` is false we keep the existing Responses API stateful
-    behavior. Fallback synthesis forces a stateless payload so the provider does
-    not continue an old tool-enabled response state.
-    """
-
-    new_form_data = {
-        **form_data,
-        'model': model_id,
-        'stream': True,
-    }
-    if metadata is not None:
-        new_form_data['metadata'] = metadata
-
-    reasoning_format = get_reasoning_format(model, model_id)
-
-    if not force_stateless and ENABLE_RESPONSES_API_STATEFUL and last_response_id:
-        system_message = get_system_message(form_data['messages'])
-        follow_up_messages = ([copy.deepcopy(system_message)] if system_message else []) + convert_output_to_messages(
-            output, raw=True, reasoning_format=reasoning_format
-        )
-        new_form_data['previous_response_id'] = last_response_id
-    else:
-        follow_up_messages = build_stateless_tool_follow_up_messages(
-            form_data['messages'], output, reasoning_format=reasoning_format
-        )
-        new_form_data.pop('previous_response_id', None)
-
-    if extra_system_instruction:
-        follow_up_messages = add_or_update_system_message(
-            extra_system_instruction,
-            follow_up_messages,
-            append=True,
-        )
-
-    new_form_data['messages'] = follow_up_messages
-
-    if disallow_tools:
-        new_form_data.pop('tools', None)
-        new_form_data.pop('tool_choice', None)
-
-    return new_form_data
 
 
 def deep_merge(target, source):
@@ -6332,9 +6013,6 @@ async def streaming_chat_response_handler(response, ctx):
                     if response.background:
                         await response.background()
 
-                executed_native_tool_calls = False
-                tool_fallback_attempted = False
-                tool_follow_up_form_data = None
                 tool_call_iterations = 0
                 max_tool_call_iterations = getattr(
                     request.state,
@@ -6357,29 +6035,17 @@ async def streaming_chat_response_handler(response, ctx):
                     system_message = get_system_message(form_data['messages'])
                     base_system_prompt = get_content_from_message(system_message) if system_message else None
 
-                async def run_follow_up_request(new_form_data: dict, *, emit_error: bool = False) -> bool:
+                async def run_follow_up_request(new_form_data: dict) -> bool:
                     nonlocal output
                     nonlocal prior_output
                     nonlocal output_start
 
-                    try:
-                        res = await generate_chat_completion(
-                            request,
-                            new_form_data,
-                            user,
-                            bypass_system_prompt=True,
-                        )
-                    except Exception as e:
-                        log.debug(e)
-                        if emit_error:
-                            error_text = str(e)
-                            append_assistant_output_text(
-                                output,
-                                f'I could not generate the final answer after using tools because the follow-up request failed: {error_text}',
-                            )
-                            await emit_output()
-                            await emit_message_error(error_text)
-                        return False
+                    res = await generate_chat_completion(
+                        request,
+                        new_form_data,
+                        user,
+                        bypass_system_prompt=True,
+                    )
 
                     if not isinstance(res, StreamingResponse):
                         content, error_text = get_non_streaming_follow_up_result(res)
@@ -6392,14 +6058,7 @@ async def streaming_chat_response_handler(response, ctx):
                         status_suffix = f' (HTTP {status_code})' if status_code else ''
                         error_text = error_text or f'Unexpected non-streaming follow-up response{status_suffix}'
                         log.warning(error_text)
-
-                        if emit_error:
-                            append_assistant_output_text(
-                                output,
-                                f'I could not generate the final answer after using tools because the follow-up request failed: {error_text}',
-                            )
-                            await emit_output()
-                            await emit_message_error(error_text)
+                        await emit_message_error(get_message_error_content(error_text))
                         return False
 
                     # Save accumulated output and start fresh.
@@ -6668,9 +6327,6 @@ async def streaming_chat_response_handler(response, ctx):
                             }
                         )
 
-                    if results:
-                        executed_native_tool_calls = True
-
                     # Update function_call statuses and parsed/sanitized arguments.
                     for tc in response_tool_calls:
                         call_id = tc.get('id', '')
@@ -6741,7 +6397,6 @@ async def streaming_chat_response_handler(response, ctx):
                     await emit_output()
 
                     try:
-                        tool_follow_up_form_data = None
                         new_form_data = {
                             **form_data,
                             'model': model_id,
@@ -6758,8 +6413,11 @@ async def streaming_chat_response_handler(response, ctx):
                             )
                             new_form_data['previous_response_id'] = last_response_id
                         else:
-                            tool_messages = build_stateless_tool_follow_up_messages(
-                                [], output, reasoning_format=get_reasoning_format(model, model_id)
+                            tool_messages = convert_output_to_messages(
+                                output,
+                                raw=True,
+                                reasoning_format=get_reasoning_format(model, model_id),
+                                flatten_tool_images=True,
                             )
 
                             # Refresh citation context without restoring compacted history.
@@ -6821,10 +6479,6 @@ async def streaming_chat_response_handler(response, ctx):
                         new_form_data = normalize_messages_for_model(new_form_data)
                         new_form_data = strip_image_content_for_non_vision_model(new_form_data, model)
 
-                        # Stateful requests carry only the current round; fallback must
-                        # reconstruct their full history when dropping previous_response_id.
-                        if not new_form_data.get('previous_response_id'):
-                            tool_follow_up_form_data = new_form_data
                         if not await run_follow_up_request(new_form_data):
                             break
                     except Exception as e:
@@ -6833,47 +6487,14 @@ async def streaming_chat_response_handler(response, ctx):
                         await emit_message_error(error_content)
                         break
 
-                tool_call_limit_reached = (
+                if (
                     max_tool_call_iterations is not None
                     and tool_calls
                     and tool_call_iterations >= max_tool_call_iterations
-                )
-                if tool_call_limit_reached:
+                ):
                     log.warning('Tool-call iteration limit reached (%s)', max_tool_call_iterations)
                     error_content = f'Tool-call limit reached ({max_tool_call_iterations} iterations).'
                     await emit_message_error(error_content)
-                elif (
-                    executed_native_tool_calls
-                    and not tool_fallback_attempted
-                    and not output_has_assistant_message_after_last_tool_output(full_output())
-                ):
-                    tool_fallback_attempted = True
-                    try:
-                        fallback_form_data = build_native_tool_follow_up_form_data(
-                            tool_follow_up_form_data if tool_follow_up_form_data is not None else form_data,
-                            model_id,
-                            [] if tool_follow_up_form_data is not None else full_output(),
-                            metadata=metadata,
-                            model=model,
-                            force_stateless=True,
-                            disallow_tools=True,
-                            extra_system_instruction=TOOL_FALLBACK_SYNTHESIS_PROMPT,
-                        )
-                        fallback_form_data = await convert_url_images_to_base64(fallback_form_data, user=user)
-                        if filter_functions:
-                            fallback_form_data, _ = await process_filter_functions(
-                                request=request,
-                                filter_context=filter_context,
-                                filter_functions=filter_functions,
-                                filter_type='request',
-                                form_data=fallback_form_data,
-                                extra_params=extra_params,
-                            )
-                        fallback_form_data = normalize_messages_for_model(fallback_form_data)
-                        fallback_form_data = strip_image_content_for_non_vision_model(fallback_form_data, model)
-                        await run_follow_up_request(fallback_form_data, emit_error=True)
-                    except Exception as e:
-                        log.debug(e)
 
                 if DETECT_CODE_INTERPRETER:
                     MAX_RETRIES = 5
