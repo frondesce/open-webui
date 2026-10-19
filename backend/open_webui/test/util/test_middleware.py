@@ -436,10 +436,12 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     emitted = []
     compacted_inputs = []
 
-    def stream(*deltas):
+    def stream(*deltas, usage=None):
         async def body():
             for delta in deltas:
                 yield 'data: ' + json.dumps({'choices': [{'delta': delta}]}) + '\n\n'
+            if usage:
+                yield 'data: ' + json.dumps({'choices': [], 'usage': usage}) + '\n\n'
             yield 'data: [DONE]\n\n'
 
         return StreamingResponse(body(), media_type='text/event-stream')
@@ -460,7 +462,11 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     async def generate(request, form_data, user, **kwargs):
         requests.append(copy.deepcopy(form_data))
         if len(requests) == 1:
-            return stream({'reasoning_content': 'second round reasoning'}, tool_delta('call_2'))
+            return stream(
+                {'reasoning_content': 'second round reasoning'},
+                tool_delta('call_2'),
+                usage={'prompt_tokens': 200, 'completion_tokens': 20, 'total_tokens': 220},
+            )
         assert len(requests) == 2, 'Unexpected extra model request after the tool continuation'
         if follow_up == 'stream':
             return stream({'content': 'Final answer from tool results.'})
@@ -526,12 +532,18 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     }
     asyncio.run(
         middleware.streaming_chat_response_handler(
-            stream({'reasoning_content': 'first round reasoning'}, tool_delta('call_1')), ctx
+            stream(
+                {'reasoning_content': 'first round reasoning'},
+                tool_delta('call_1'),
+                usage={'prompt_tokens': 100, 'completion_tokens': 10, 'total_tokens': 110},
+            ),
+            ctx,
         )
     )
 
     assert len(requests) == (1 if follow_up == 'limit' else 2)
     assert compacted_inputs[0][-2]['reasoning_content'] == 'first round reasoning'
+    assert compacted_inputs[0][-2]['usage']['total_tokens'] == 110
     last_request = requests[-1]
     assert last_request['tools'] == ctx['form_data']['tools']
     assert last_request['tool_choice'] == 'auto'
@@ -540,6 +552,7 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     assert any('Earlier lookup completed.' in str(message['content']) for message in last_request['messages'])
     assert not any('old history to compact' in str(message['content']) for message in last_request['messages'])
     if follow_up != 'limit':
+        assert compacted_inputs[1][-2]['usage']['total_tokens'] == 220
         assert last_request['messages'][-2]['reasoning_content'] == 'second round reasoning'
         assert [message['tool_call_id'] for message in last_request['messages'] if message['role'] == 'tool'] == [
             'call_2'
