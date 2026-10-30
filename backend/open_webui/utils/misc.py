@@ -453,17 +453,6 @@ def convert_output_to_messages(
     pending_reasoning_details = []
     pending_tool_image_urls = []
     pending_tool_outputs = []
-    completed_call_ids = {
-        item.get('call_id')
-        for item in output
-        if item.get('type') == 'function_call'
-        and item.get('call_id')
-        and (item.get('status') is None or item.get('status') in {'completed', 'failed', 'rejected'})
-    }
-    result_call_ids = {
-        item.get('call_id') for item in output if item.get('type') == 'function_call_output' and item.get('call_id')
-    }
-    function_call_ids = completed_call_ids & result_call_ids
 
     def flush_pending():
         nonlocal pending_content, pending_tool_calls, pending_reasoning, pending_reasoning_details
@@ -515,6 +504,11 @@ def convert_output_to_messages(
         if not pending_tool_outputs:
             return
 
+        pending_tool_outputs = [
+            result
+            for result in pending_tool_outputs
+            if any(call['id'] == result.get('call_id') for call in pending_tool_calls)
+        ]
         flush_pending()
         for output_item in pending_tool_outputs:
             output_parts = output_item.get('output', [])
@@ -577,7 +571,9 @@ def convert_output_to_messages(
                 pending_content.append(text)
 
         elif item_type == 'function_call':
-            if item.get('call_id') not in function_call_ids:
+            if not item.get('call_id') or (
+                item.get('status') is not None and item.get('status') not in {'completed', 'failed', 'rejected'}
+            ):
                 continue
 
             # Collect tool calls to batch into assistant message
@@ -590,9 +586,6 @@ def convert_output_to_messages(
             )
 
         elif item_type == 'function_call_output':
-            if item.get('call_id') not in function_call_ids:
-                continue
-
             pending_tool_outputs.append(item)
 
         elif item_type == 'reasoning':

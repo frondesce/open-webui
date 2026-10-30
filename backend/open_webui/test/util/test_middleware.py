@@ -9,6 +9,7 @@ from open_webui.utils.middleware import (
     get_reasoning_format,
     get_non_streaming_follow_up_result,
     process_messages_with_output,
+    strip_tool_images,
 )
 from open_webui.utils.misc import convert_output_to_messages, should_preserve_reasoning_content_for_model
 from open_webui.utils.payload import (
@@ -419,6 +420,52 @@ def test_process_messages_with_output_skips_orphan_tool_output():
     ]
 
 
+@pytest.mark.parametrize('vision', [False, True])
+def test_tool_image_replay_preserves_reasoning_and_matching_tool_pairs(vision):
+    model = {'id': 'kimi-k2.5', 'info': {'meta': {'capabilities': {'vision': vision}}}}
+    output = [
+        {'type': 'reasoning', 'summary': [{'type': 'output_text', 'text': 'Inspect the image.'}]},
+        {'type': 'function_call', 'call_id': 'call_1', 'name': 'lookup', 'arguments': '{}'},
+        {
+            'type': 'function_call_output',
+            'call_id': 'call_1',
+            'output': [
+                {'type': 'input_text', 'text': 'Tool result'},
+                {'type': 'input_image', 'image_url': 'data:image/png;base64,abc'},
+            ],
+        },
+        {
+            'type': 'function_call_output',
+            'call_id': 'orphan',
+            'output': [{'type': 'input_text', 'text': 'Unmatched result'}],
+        },
+    ]
+
+    messages = convert_output_to_messages(
+        strip_tool_images(output, model),
+        raw=True,
+        reasoning_format=get_reasoning_format(model),
+        flatten_tool_images=True,
+    )
+
+    assert messages[0]['reasoning_content'] == 'Inspect the image.'
+    assert [call['id'] for call in messages[0]['tool_calls']] == ['call_1']
+    assert messages[1] == {
+        'role': 'tool',
+        'tool_call_id': 'call_1',
+        'content': 'Tool result' if vision else 'Tool result\n[image]',
+    }
+    if vision:
+        assert messages[2]['role'] == 'user'
+        assert messages[2]['content'][1] == {
+            'type': 'image_url',
+            'image_url': {'url': 'data:image/png;base64,abc'},
+        }
+    else:
+        assert len(messages) == 2
+    assert output[2]['output'][1]['type'] == 'input_image'
+
+
 @pytest.mark.parametrize('follow_up', ['empty', 'stream', 'json', 'error', 'exception', 'limit'])
 def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, follow_up):
     """Preserve compacted tool history and stop without an extra synthesis request."""
@@ -435,6 +482,7 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     requests = []
     emitted = []
     compacted_inputs = []
+    logged_usage = []
 
     def stream(*deltas, usage=None):
         async def body():
@@ -505,6 +553,11 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     monkeypatch.setattr(middleware, 'publish_chat_finished_event', noop)
     monkeypatch.setattr(middleware, 'outlet_filter_handler', noop)
     monkeypatch.setattr(middleware, 'background_tasks_handler', noop)
+    monkeypatch.setattr(
+        middleware,
+        'log_model_usage',
+        lambda request, user, model_id, usage: logged_usage.append(copy.deepcopy(usage)),
+    )
 
     model = {'id': 'kimi-k2.5'}
     app = SimpleNamespace(state=SimpleNamespace(redis=None, MODELS={model['id']: model}))
@@ -544,6 +597,9 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     assert len(requests) == (1 if follow_up == 'limit' else 2)
     assert compacted_inputs[0][-2]['reasoning_content'] == 'first round reasoning'
     assert compacted_inputs[0][-2]['usage']['total_tokens'] == 110
+    assert [usage.get('total_tokens') for usage in logged_usage] == (
+        [110, 220, None] if follow_up in {'empty', 'stream'} else [110, 220]
+    )
     last_request = requests[-1]
     assert last_request['tools'] == ctx['form_data']['tools']
     assert last_request['tool_choice'] == 'auto'
