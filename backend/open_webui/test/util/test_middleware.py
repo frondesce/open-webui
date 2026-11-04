@@ -467,7 +467,8 @@ def test_tool_image_replay_preserves_reasoning_and_matching_tool_pairs(vision):
 
 
 @pytest.mark.parametrize('follow_up', ['empty', 'stream', 'json', 'error', 'exception', 'limit'])
-def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, follow_up):
+@pytest.mark.parametrize('vision', [None, False, True])
+def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, follow_up, vision):
     """Preserve compacted tool history and stop without an extra synthesis request."""
     import asyncio
     import copy
@@ -532,14 +533,33 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
         return {}, 'lookup result', {'type': 'builtin'}, 'builtin', False
 
     async def process_result(request, name, result, *args):
-        return result, [], []
+        files = [{'type': 'image', 'url': 'data:image/png;base64,abc'}] if vision is not None else []
+        return result, files, []
 
-    async def compact(request, user, messages, *args):
+    async def store_image(request, url, *args):
+        return url
+
+    def latest_tool_turn(messages):
+        index = max(index for index, message in enumerate(messages) if message.get('tool_calls'))
+        return messages[index:]
+
+    async def compact(request, form_data, user, messages, *args, bypass_system_prompt=False):
+        assert bypass_system_prompt is True
+        assert form_data['model'] == 'kimi-k2.5'
+        assert form_data['tools'] == ctx['form_data']['tools']
+        assert (
+            latest_tool_turn(form_data['messages'])[0]['reasoning_content']
+            == latest_tool_turn(messages)[0]['reasoning_content']
+        )
         compacted_inputs.append(copy.deepcopy(messages))
-        if len(compacted_inputs) == 1:
-            system_messages = [message for message in messages if message.get('role') == 'system']
-            return [*system_messages, {'role': 'user', 'content': 'checkpoint'}], 'Earlier lookup completed.', True
-        return messages, None, False
+        system_messages = [message for message in messages if message.get('role') == 'system']
+        # Keep the current tool pair; earlier rounds survive in the UI output.
+        recent = latest_tool_turn(messages)
+        return (
+            [*system_messages, {'role': 'user', 'content': 'checkpoint'}, *recent],
+            'Earlier lookup completed.',
+            messages[1 : -len(recent)],
+        )
 
     monkeypatch.setattr(middleware, 'ENABLE_FUNCTIONS', False)
     monkeypatch.setattr(middleware, 'ENABLE_RESPONSES_API_STATEFUL', False)
@@ -547,6 +567,7 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     monkeypatch.setattr(middleware, 'generate_chat_completion', generate)
     monkeypatch.setattr(middleware, 'execute_tool_call', execute)
     monkeypatch.setattr(middleware, 'process_tool_result', process_result)
+    monkeypatch.setattr(middleware, 'store_tool_result_image', store_image)
     monkeypatch.setattr(middleware, 'terminal_event_handler', noop)
     monkeypatch.setattr(middleware, 'compact_messages_for_request', compact)
     monkeypatch.setattr(middleware, 'clear_response_stream', noop)
@@ -560,6 +581,8 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     )
 
     model = {'id': 'kimi-k2.5'}
+    if vision is not None:
+        model['info'] = {'meta': {'capabilities': {'vision': vision}}}
     app = SimpleNamespace(state=SimpleNamespace(redis=None, MODELS={model['id']: model}))
     request = Request({'type': 'http', 'app': app, 'headers': []})
     request.state.max_tool_call_iterations = 1 if follow_up == 'limit' else 5
@@ -595,8 +618,8 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     )
 
     assert len(requests) == (1 if follow_up == 'limit' else 2)
-    assert compacted_inputs[0][-2]['reasoning_content'] == 'first round reasoning'
-    assert compacted_inputs[0][-2]['usage']['total_tokens'] == 110
+    assert latest_tool_turn(compacted_inputs[0])[0]['reasoning_content'] == 'first round reasoning'
+    assert latest_tool_turn(compacted_inputs[0])[0]['usage']['total_tokens'] == 110
     assert [usage.get('total_tokens') for usage in logged_usage] == (
         [110, 220, None] if follow_up in {'empty', 'stream'} else [110, 220]
     )
@@ -605,14 +628,27 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     assert last_request['tool_choice'] == 'auto'
     assert last_request['messages'][0]['role'] == 'system'
     assert last_request['messages'][0]['content'] == 'base system\n[CONVERSATION SUMMARY]\nEarlier lookup completed.'
+    assert all('contextSummary' not in message and 'usage' not in message for message in last_request['messages'])
     assert any('Earlier lookup completed.' in str(message['content']) for message in last_request['messages'])
     assert not any('old history to compact' in str(message['content']) for message in last_request['messages'])
     if follow_up != 'limit':
-        assert compacted_inputs[1][-2]['usage']['total_tokens'] == 220
-        assert last_request['messages'][-2]['reasoning_content'] == 'second round reasoning'
+        assert latest_tool_turn(compacted_inputs[1])[0]['usage']['total_tokens'] == 220
+        assert latest_tool_turn(last_request['messages'])[0]['reasoning_content'] == 'second round reasoning'
         assert [message['tool_call_id'] for message in last_request['messages'] if message['role'] == 'tool'] == [
             'call_2'
         ]
+
+    for payload in requests:
+        image_parts = [
+            part
+            for message in payload['messages']
+            if isinstance(message.get('content'), list)
+            for part in message['content']
+            if part.get('type') == 'image_url'
+        ]
+        assert len(image_parts) == (1 if vision else 0)
+        if image_parts:
+            assert image_parts[0]['image_url']['url'] == 'data:image/png;base64,abc'
 
     output = ctx['assistant_message']['output']
     expected_calls = ['call_1'] if follow_up == 'limit' else ['call_1', 'call_2']
