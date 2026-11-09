@@ -479,6 +479,7 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     from starlette.responses import JSONResponse, StreamingResponse
 
     from open_webui.utils import middleware
+    from open_webui.utils.tool_calling import FINAL_ANSWER_PROMPT
 
     requests = []
     emitted = []
@@ -510,6 +511,10 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
 
     async def generate(request, form_data, user, **kwargs):
         requests.append(copy.deepcopy(form_data))
+        if follow_up == 'limit':
+            assert form_data['tools'] == []
+            assert form_data['tool_choice'] == 'none'
+            return stream({'content': 'Final answer from tool results.'})
         if len(requests) == 1:
             return stream(
                 {'reasoning_content': 'second round reasoning'},
@@ -600,7 +605,17 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
         },
         'user': SimpleNamespace(id='test-user', role='admin'),
         'model': model,
-        'metadata': {'chat_id': '', 'params': {'function_calling': 'native', 'tool_approval_mode': 'full'}},
+        'metadata': {
+            'chat_id': '',
+            'params': {'function_calling': 'native', 'tool_approval_mode': 'full'},
+            'tools': {
+                'lookup': {
+                    'spec': {'name': 'lookup', 'parameters': {'type': 'object', 'properties': {}}},
+                    'callable': noop,
+                    'type': 'builtin',
+                }
+            },
+        },
         'events': [],
         'event_emitter': emit,
         'event_caller': None,
@@ -621,13 +636,16 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
     assert latest_tool_turn(compacted_inputs[0])[0]['reasoning_content'] == 'first round reasoning'
     assert latest_tool_turn(compacted_inputs[0])[0]['usage']['total_tokens'] == 110
     assert [usage.get('total_tokens') for usage in logged_usage] == (
-        [110, 220, None] if follow_up in {'empty', 'stream'} else [110, 220]
+        [110, None] if follow_up == 'limit' else [110, 220, None] if follow_up in {'empty', 'stream'} else [110, 220]
     )
     last_request = requests[-1]
-    assert last_request['tools'] == ctx['form_data']['tools']
-    assert last_request['tool_choice'] == 'auto'
+    assert last_request['tools'] == ([] if follow_up == 'limit' else ctx['form_data']['tools'])
+    assert last_request['tool_choice'] == ('none' if follow_up == 'limit' else 'auto')
     assert last_request['messages'][0]['role'] == 'system'
-    assert last_request['messages'][0]['content'] == 'base system\n[CONVERSATION SUMMARY]\nEarlier lookup completed.'
+    expected_system = 'base system\n[CONVERSATION SUMMARY]\nEarlier lookup completed.'
+    if follow_up == 'limit':
+        expected_system += '\n' + FINAL_ANSWER_PROMPT
+    assert last_request['messages'][0]['content'] == expected_system
     assert all('contextSummary' not in message and 'usage' not in message for message in last_request['messages'])
     assert any('Earlier lookup completed.' in str(message['content']) for message in last_request['messages'])
     assert not any('old history to compact' in str(message['content']) for message in last_request['messages'])
@@ -658,13 +676,11 @@ def test_tool_loop_compaction_finishes_without_forced_synthesis(monkeypatch, fol
         part.get('text', '') for item in output if item['type'] == 'message' for part in item.get('content', [])
     )
     errors = [event['data']['error']['content'] for event in emitted if event['type'] == 'chat:message:error']
-    if follow_up in {'stream', 'json'}:
+    if follow_up in {'stream', 'json', 'limit'}:
         assert answer == 'Final answer from tool results.'
     else:
         assert answer == ''
     if follow_up in {'error', 'exception'}:
         assert errors == ['Provider unavailable']
-    elif follow_up == 'limit':
-        assert errors == ['Tool-call limit reached (1 iterations).']
     else:
         assert errors == []

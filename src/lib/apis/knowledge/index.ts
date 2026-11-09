@@ -445,7 +445,8 @@ export const searchKnowledgeFiles = async (
 	orderBy?: string | null,
 	direction?: string | null,
 	page: number = 1,
-	includeContent: boolean = false
+	includeContent: boolean = false,
+	signal?: AbortSignal
 ) => {
 	let error = null;
 
@@ -461,6 +462,7 @@ export const searchKnowledgeFiles = async (
 		`${WEBUI_API_BASE_URL}/knowledge/search/files?${searchParams.toString()}`,
 		{
 			method: 'GET',
+			signal,
 			headers: {
 				Accept: 'application/json',
 				'Content-Type': 'application/json',
@@ -473,6 +475,7 @@ export const searchKnowledgeFiles = async (
 			return json;
 		})
 		.catch((err) => {
+			if (signal?.aborted) return null;
 			error = err.detail;
 
 			console.error(err);
