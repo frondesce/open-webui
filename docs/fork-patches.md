@@ -1,46 +1,28 @@
-# Fork Patch Review
+# Fork Patch Inventory
 
-Review date: 2026-10-15. The numbers below correspond to the original 18-item feature inventory.
+Maintenance checklist for the differences retained in this fork. For user-facing features and installation, see the [fork homepage](../.github/README.md).
 
-- Local starting point: `36108e06a`.
-- Upstream already integrated into this branch: `f8ae8a6c3` (after the v0.12.0 release).
-- Latest upstream main fetched for this review: `6a18585ff` (v0.12.2). This review did not merge that version.
+Comparison baseline: upstream 0.13.3, `b0e6098e9`.
 
-Removal decisions depend on the implementation actually present in this branch. Partial coverage in newer upstream code is a reason to review a patch again during an upgrade, rather than remove it before upgrading.
+Update entries in place when upstream changes. Remove entries when a patch is retired or fully covered upstream; Git history preserves earlier decisions. Keep validation results in commit or PR descriptions.
 
-| No. | Feature / fix                                     | Decision                     | Upstream coverage and remaining differences                                                                                                                                                                                                                                          |
-| --- | ------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Empty `.codex` file                               | Remove                       | Zero-byte file with no content.                                                                                                                                                                                                                                                      |
-| 2   | `AGENTS.md`                                       | Keep                         | Repository navigation, local integration, and maintenance guidance. Pre-existing uncommitted changes were left untouched.                                                                                                                                                            |
-| 3   | README deployment instructions                    | Keep                         | Document the personal GHCR image and how it differs from upstream images. These instructions now live in `.github/README.md`; the root README follows the integrated upstream version.                                                                                               |
-| 4   | GitHub Actions customization                      | Keep                         | The single-architecture personal image build, release process, and CI cost choices still serve this fork. The review did not restore upstream's multi-architecture, multi-variant builds or change CI.                                                                               |
-| 5   | Forced synthesis after tool execution             | Remove                       | Upstream has no equivalent extra synthesis request. Remove the answer detector, dedicated prompt, stateless payload builder, and extra request as a maintenance choice. Preserve normal tool-result continuation.                                                                    |
-| 6   | Tool-result replay and status compatibility       | Keep remaining difference    | Upstream already filters unpaired calls and results. This branch additionally allows calls with a missing `status` to pair with results; newer upstream has not covered this condition.                                                                                              |
-| 7   | Provider-native tool merging and deduplication    | Keep                         | Neither upstream version includes this branch's deferred append and idempotent merge when applying parameters. Removing it would restore conflicts between tools supplied through parameters and built-in tools.                                                                     |
-| 8   | Non-streaming tool continuation responses         | Keep; adjust error reporting | Newer upstream still primarily handles successful streaming responses. Keep JSON answer and nested error parsing. Remove the dependency on forced synthesis: failures emit `chat:message:error` directly without inserting a fabricated model answer.                                |
-| 9   | Reasoning replay for selected models              | Keep                         | Neither upstream version's `get_reasoning_format` includes the local DeepSeek / MiMo / Kimi version rules or explicit capability checks. Normal tool continuation still uses this format selection, independently of forced synthesis.                                               |
-| 10  | Image context trimming for text-only models       | Keep                         | Changes to upstream payload, chat, and image handling between the reviewed versions do not cover this patch. Trimming depends on the model's `vision` capability.                                                                                                                    |
-| 11  | Large SSE / oversized line handling               | Reduce                       | Upstream already assembles lines from chunks and drops lines exceeding the configured limit. Keep only the protection that discards subsequent fragments of an oversized line before buffering them. Remove synthetic `data: {}` placeholders to match upstream's dropping behavior. |
-| 12  | HTTP 404 results from `search_memories`           | Keep                         | The function is unchanged between the two upstream versions and still does not convert HTTP 404 into an empty list.                                                                                                                                                                  |
-| 13  | Provider-prefixed and newer GPT image model names | Keep                         | Newer upstream image routes do not cover this branch's basename matching and expanded default pattern.                                                                                                                                                                               |
-| 14  | OpenAI / Chat Completion image extraction         | Keep                         | Newer upstream image routes do not cover extraction from the additional response shapes. Keep the restriction that download credentials are sent only to the same origin.                                                                                                            |
-| 15  | Hiding stale provider models                      | Superseded upstream          | The old filtering patch was already removed when v0.12.0 was merged. This branch uses the Available / Unavailable views; no old patch remained to remove in this review.                                                                                                             |
-| 16  | Citation titles, hostnames, and favicons          | Keep                         | v0.12.2 partially preserves names for `metadata.external`. Hostname fallback for numeric titles, title preservation for other URL sources, and favicon lookup using the actual URL remain incompletely covered.                                                                      |
-| 17  | Markdown `<details>` parsing                      | Keep                         | The file is unchanged in newer upstream and still lacks the local block-start and attributed-tag fixes.                                                                                                                                                                              |
-| 18  | Frontend API error parsing                        | Keep existing scope          | The relevant API files are unchanged in newer upstream and still lack the local handling of HTML / non-JSON error responses.                                                                                                                                                         |
+## Runtime patches
 
-## Additional dead code removed
+| Patch | Reason to retain |
+| --- | --- |
+| [Provider-native tool merging](../backend/open_webui/utils/payload.py) | Append model-parameter tools after WebUI resolves callable tools, with deduplication. Upstream does not provide this merge behavior. |
+| [Reasoning replay](../backend/open_webui/utils/misc.py) | Automatically recognize supported DeepSeek, MiMo and Kimi versions and explicit reasoning capabilities. Upstream relies on provider configuration for native reasoning replay. |
+| [JSON tool continuation answers](../backend/open_webui/utils/middleware.py) | Display non-streaming answers and nested provider errors when a streaming continuation was requested. Upstream primarily handles streaming answers. |
+| [Missing tool status compatibility](../backend/open_webui/utils/misc.py) | Replay calls without a status when they have matching results; upstream skips those calls. |
+| [Text-only model image trimming](../backend/open_webui/utils/payload.py) | Remove images from provider-bound conversation history and follow-ups when vision is disabled, preserving text. |
+| [Image model name matching](../backend/open_webui/utils/images/model_patterns.py) | Recognize names such as `openai/gpt-image-2.6` by default and match custom patterns against the model basename. Retained for use without extra environment configuration. |
+| [Compatible image responses](../backend/open_webui/utils/images/openai.py) | Extract images from additional Chat Completion response shapes in image generation and editing. Retained as reusable provider compatibility; upstream expects standard image responses. |
+| [Citation presentation](../src/lib/components/chat/Messages/citations.ts) | Preserve titles, use hostnames for numeric or empty URL names, and resolve favicons from the source URL. Upstream only partially covers these cases. |
+| [Markdown details parsing](../src/lib/utils/marked/extension.ts) | Recognize attributed details blocks after ordinary text and relax newline requirements. |
+| [Frontend API error parsing](../src/lib/apis/request.ts) | Handle HTML and non-JSON errors in knowledge-base and selected OpenAI API calls. Upstream still assumes JSON responses there. |
+| [Oversized SSE line tails](../backend/open_webui/utils/misc.py) | Discard remaining fragments before buffering when a line exceeds the configured cap. Upstream already assembles chunks and drops oversized lines; this patch retains only the tail-buffering fix. |
 
-- The old HTML serialization implementation and its dedicated helpers in `utils/middleware.py`: 204 lines, with no callers in the repository. Upstream removed these functions in `0443ab3a6`.
-- `is_deepseek_v4_or_later_model` in `utils/misc.py`: 8 lines, with no callers. The general `should_preserve_reasoning_content_for_model` function continues to perform model detection.
-- Request builders, detectors, state variables, and old tests used only by forced synthesis. Normal continuation now directly reuses upstream's `convert_output_to_messages(..., flatten_tool_images=True)`.
+## Maintenance customization
 
-## Tool-calling behavior changes
-
-After tool execution, results still go back to the model for continuation; the model can call more tools or produce an answer. An empty response stream ends normally, without an extra request that prohibits further tool calls. JSON continuation answers still display, errors and exceptions surface directly, and the tool-call iteration limit remains in effect.
-
-Removing forced synthesis is a choice to reduce automatic intervention and maintenance cost. It does not establish that every model or provider will always produce a final answer. This review did not call live provider APIs.
-
-## Validation scope
-
-Targeted backend tests cover the tool loop, context compaction, reasoning replay, SSE handling, tool parameters, and image compatibility. Tool-loop cases cover empty streams, normal streams, non-streaming JSON, error responses, request exceptions, and the iteration limit, checking that no extra forced-synthesis request is made.
+- [GitHub Actions](../.github/workflows): single-architecture personal GHCR image, reduced CI matrix, tag-based releases and disabled PyPI publishing.
+- [Fork homepage](../.github/README.md) and [agent guide](../AGENTS.md): fork deployment instructions and repository maintenance guidance; the root README follows upstream.

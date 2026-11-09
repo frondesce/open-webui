@@ -937,11 +937,6 @@ async def search_memories(
             ],
             ensure_ascii=False,
         )
-    except HTTPException as e:
-        if e.status_code == 404:
-            return JSONCodec.dumps([])
-        log.exception(f'search_memories error: {e}')
-        return JSONCodec.dumps({'error': str(e)})
     except Exception as e:
         log.exception(f'search_memories error: {e}')
         return JSONCodec.dumps({'error': str(e)})

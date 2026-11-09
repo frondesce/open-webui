@@ -23,9 +23,8 @@ This page describes the changes maintained in this fork. For the full Open WebUI
 - **Make citations easier to identify.** Preserve page titles, replace numeric or empty URL citation names with hostnames, and use the actual source URL for favicons.
 - **Render tool cards correctly in Markdown.** Recognize attributed `<details>` blocks after ordinary text so tool cards use the intended rendering.
 - **Improve error handling and stream limits.** Selected API calls show readable errors for HTML or non-JSON responses. Oversized stream lines are discarded according to the configured limit without buffering their remaining fragments.
-- **Treat empty memory searches as empty results.** A memory search returning HTTP 404 yields an empty list rather than a tool error.
 
-These changes are reviewed as upstream evolves. See the [fork patch review](../docs/fork-patches.md) for the comparison baseline, individual decisions, and changes that have been retired.
+See the [fork patch inventory](../docs/fork-patches.md) for the comparison baseline and reasons for retaining the current patches.
 
 ## Quick start
 
@@ -51,7 +50,7 @@ For other installation methods and deployment options, consult the [upstream ins
 
 - [Full Open WebUI overview and installation guide](../README.md)
 - [Official Open WebUI documentation](https://docs.openwebui.com/)
-- [Fork patch review and maintenance decisions](../docs/fork-patches.md)
+- [Fork patch inventory](../docs/fork-patches.md)
 - [Upstream project](https://github.com/open-webui/open-webui)
 - [License](../LICENSE)
 
